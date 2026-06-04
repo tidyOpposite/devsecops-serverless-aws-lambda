@@ -105,13 +105,13 @@ jobs:
     # 13. Застосування початкової інфраструктури
     - name: Terraform Apply Initial Infrastructure
       id: apply_infra
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.ref == 'refs/heads/main'
       run: terraform -chdir="${{ env.TF_WORKING_DIR }}" apply -auto-approve -no-color -input=false # Added -input=false
 
     # 14. Верифікація існування KMS Key
     - name: Verify KMS Key Existence
       id: verify_kms
-      if: steps.apply_infra.outcome == 'success' || github.event_name == 'pull_request'
+      if: steps.apply_infra.outcome == 'success'
       run: |
         echo "Attempting to describe KMS key..."
         KMS_ARN=$(terraform -chdir='${{ env.TF_WORKING_DIR }}' output -raw kms_key_arn)
@@ -121,7 +121,7 @@ jobs:
     # 15. Верифікація існування ECR репозиторію
     - name: Verify ECR Repo Existence
       id: verify_ecr
-      if: steps.apply_infra.outcome == 'success' || github.event_name == 'pull_request'
+      if: steps.apply_infra.outcome == 'success'
       run: |
         echo "Attempting to describe ECR repository: ${{ env.ECR_REPOSITORY }}"
         aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --region ${{ secrets.AWS_REGION }}
@@ -132,13 +132,13 @@ jobs:
     # 16. Логін до Amazon ECR
     - name: Login to Amazon ECR
       id: login-ecr
-      if: steps.apply_infra.outcome == 'success' || github.event_name == 'pull_request'
+      if: steps.apply_infra.outcome == 'success'
       uses: aws-actions/amazon-ecr-login@v2
 
     # 17. Збірка, тег, та Push Docker Image
     - name: Build, Tag, and Push Docker Image
       id: build-image
-      if: steps.apply_infra.outcome == 'success' || github.event_name == 'pull_request'
+      if: steps.apply_infra.outcome == 'success'
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
@@ -167,7 +167,7 @@ jobs:
     # 19. Terraform Apply (Оновлення Lambda Image)
     - name: Terraform Apply Lambda Image Update
       id: apply_lambda_update
-      if: steps.build-image.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: steps.build-image.outcome == 'success' && github.ref == 'refs/heads/main'
       run: |
         terraform -chdir="${{ env.TF_WORKING_DIR }}" apply -auto-approve -no-color -input=false \
           -var="lambda_image_uri=${{ steps.build-image.outputs.image_uri }}"
@@ -177,7 +177,7 @@ jobs:
     # 20. Отримання Terraform Outputs для Frontend
     - name: Get Terraform Outputs for Frontend
       id: tf-outputs
-      if: steps.apply_lambda_update.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: steps.apply_lambda_update.outcome == 'success' && github.ref == 'refs/heads/main'
       run: |
         echo "frontend_bucket_name=$(terraform -chdir='${{ env.TF_WORKING_DIR }}' output -raw frontend_s3_bucket_name)" >> $GITHUB_OUTPUT
         echo "api_invoke_url=$(terraform -chdir='${{ env.TF_WORKING_DIR }}' output -raw api_gateway_invoke_url)" >> $GITHUB_OUTPUT
@@ -185,7 +185,7 @@ jobs:
     # 21. Оновлення API Endpoint в Javascript
     - name: Update API Endpoint in Javascript
       id: update-js
-      if: steps.tf-outputs.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: steps.tf-outputs.outcome == 'success' && github.ref == 'refs/heads/main'
       run: |
         API_ENDPOINT="${{ steps.tf-outputs.outputs.api_invoke_url }}"
         sed -i "s|%%API_GATEWAY_INVOKE_URL%%|${API_ENDPOINT}|g" frontend/script.js
@@ -193,6 +193,6 @@ jobs:
     # 22. Розгортання Frontend до S3
     - name: Deploy Frontend Files to S3
       id: deploy-frontend
-      if: steps.tf-outputs.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: steps.tf-outputs.outcome == 'success' && github.ref == 'refs/heads/main'
       run: |
         aws s3 sync frontend/ s3://${{ steps.tf-outputs.outputs.frontend_bucket_name }} --delete
