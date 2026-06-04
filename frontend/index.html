@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="uk"> <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Генератор GIF Прев'ю з Відео</title> <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Генератор GIF Прев'ю з Відео</h1> <p>Завантажте відеофайл, і ми згенеруємо коротке GIF-прев'ю, що складається з невеликих кліпів з усього відео.</p> <form id="upload-form"> <div class="form-group">
+                <label for="file">Виберіть відеофайл:</label> <input type="file" id="file" name="file" accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska,video/webm,video/ogg" required>
+                <small>Дозволені формати: MP4, MOV, AVI, MKV, WebM, Ogg. Макс. розмір: 100MB.</small> </div>
+            <button type="submit" id="submit-button">Згенерувати GIF Прев'ю</button> </form>
+
+        <div id="status-area" class="status-area" style="display: none;">
+             <div class="spinner" id="spinner" style="display: none;"></div>
+            <p id="status-message"></p>
+            <div id="download-link-container"></div>
+        </div>
+    </div>
+
+    <script src="./script.js"></script>
+</body>
+</html>
