@@ -1,198 +1,328 @@
-# Назва workflow
-name: Deploy GIF Generator to AWS
+name: Secure Serverless DevSecOps Pipeline
 
-# Тригер: запуск вручну з вкладки GitHub Actions.
 on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
   workflow_dispatch:
+    inputs:
+      environment:
+        description: Terraform workspace to plan
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
 
-# Дозволи для OIDC
 permissions:
-  id-token: write
   contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: terraform-${{ github.event.inputs.environment || (github.event_name == 'pull_request' && 'dev' || 'prod') }}
+  cancel-in-progress: false
+
+env:
+  PROJECT_NAME: ${{ vars.PROJECT_NAME || 'gif-generator' }}
+  PYTHON_VERSION: "3.9"
+  TF_VERSION: "1.10.5"
+  TF_IN_AUTOMATION: "true"
+  TF_WORKING_DIR: terraform
+  DEPLOY_ENVIRONMENT: ${{ github.event.inputs.environment || (github.event_name == 'pull_request' && 'dev' || 'prod') }}
 
 jobs:
-  build-scan-deploy:
+  security-and-validate:
+    name: Security and Terraform Validate
     runs-on: ubuntu-latest
     env:
-      # Визначаємо змінні середовища для всієї задачі
-      ECR_REPOSITORY: ${{ vars.PROJECT_NAME || 'gif-generator' }}-lambda-repo
-      PYTHON_VERSION: '3.9'
-      TF_WORKING_DIR: ./terraform # Робоча директорія Terraform
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
     steps:
-    # 1. Checkout code
-    - name: Checkout Repository Code
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    # 2. Конфігурація AWS Credentials (OIDC)
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME_ARN }}
-        aws-region: ${{ secrets.AWS_REGION }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
-    # 3. Встановлення Python
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
+      - name: Set up Node.js for Snyk
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-    # 4. Встановлення Node.js (для Snyk CLI)
-    - name: Set up Node.js for Snyk
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
+      - name: Install scan dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install bandit
+          python -m pip install -r lambda_function/requirements.txt
+          if [ -n "${SNYK_TOKEN}" ]; then
+            npm install -g snyk
+          fi
 
-    # 5. Встановлення залежностей (Python tools, Lambda reqs, Snyk CLI)
-    - name: Install Dependencies
-      run: |
-        echo "Installing security scanners..."
-        python -m pip install --upgrade pip
-        pip install bandit
-        echo "Installing Lambda function requirements..."
-        pip install -r lambda_function/requirements.txt
-        echo "Installing Snyk CLI via npm..."
-        npm install -g snyk
-        echo "Snyk CLI installed."
-        snyk --version
+      - name: Run SAST scan with Bandit
+        run: bandit -r lambda_function/ -ll
 
-    # --- Стадія сканування безпеки ---
+      - name: Run SCA scan with Snyk
+        if: env.SNYK_TOKEN != ''
+        run: snyk test --file=lambda_function/requirements.txt --severity-threshold=high --fail-on=all
 
-    # 6. SAST сканування з Bandit
-    - name: Run SAST Scan (Bandit)
-      run: bandit -r lambda_function/ -ll # Зупиняти пайплайн при виявленні проблем
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
-    # 7. SCA сканування з Snyk (залежності)
-    - name: Run SCA Scan (Snyk Dependencies)
-      env:
-        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-      run: snyk test --file=lambda_function/requirements.txt --severity-threshold=high --fail-on=all
+      - name: Terraform fmt check
+        run: terraform -chdir="${TF_WORKING_DIR}" fmt -check -recursive
 
-    # 8. Встановлення Terraform
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
+      - name: Terraform init without backend
+        run: terraform -chdir="${TF_WORKING_DIR}" init -backend=false -input=false -no-color
 
-    # 9. IaC сканування з Trivy
-    - name: Run IaC Scan (Trivy)
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'config'
-        scan-ref: '${{ env.TF_WORKING_DIR }}'
-        format: 'table'
-        exit-code: '1'
-        ignore-unfixed: false
-        severity: 'HIGH,CRITICAL'
+      - name: Terraform validate
+        run: terraform -chdir="${TF_WORKING_DIR}" validate -no-color
 
-    # --- Стадія розгортання інфраструктури (Ініціалізація) ---
-    # Створює/оновлює інфраструктуру, включаючи ECR репозиторій.
-    # Lambda за замовчуванням використовує тег :latest, якщо URI образу не надано.
+      - name: Run IaC scan with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: ${{ env.TF_WORKING_DIR }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: false
+          severity: HIGH,CRITICAL
 
-    # 10. Ініціалізація Terraform
-    - name: Terraform Init
-      id: init
-      run: terraform -chdir="${{ env.TF_WORKING_DIR }}" init -no-color # Added -no-color
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: security-and-validate
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
 
-    # 11. Валидація Terraform
-    - name: Terraform Validate
-      id: validate
-      run: terraform -chdir="${{ env.TF_WORKING_DIR }}" validate -no-color
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    # 12. Планування Terraform
-    - name: Terraform Plan
-      id: plan
-      run: terraform -chdir="${{ env.TF_WORKING_DIR }}" plan -no-color -input=false # Added -input=false
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_TO_ASSUME_ARN || secrets.AWS_ROLE_TO_ASSUME_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-    # 13. Застосування початкової інфраструктури
-    - name: Terraform Apply Initial Infrastructure
-      id: apply_infra
-      if: github.ref == 'refs/heads/main'
-      run: terraform -chdir="${{ env.TF_WORKING_DIR }}" apply -auto-approve -no-color -input=false # Added -input=false
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
 
-    # 14. Верифікація існування KMS Key
-    - name: Verify KMS Key Existence
-      id: verify_kms
-      if: steps.apply_infra.outcome == 'success'
-      run: |
-        echo "Attempting to describe KMS key..."
-        KMS_ARN=$(terraform -chdir='${{ env.TF_WORKING_DIR }}' output -raw kms_key_arn)
-        aws kms describe-key --key-id $KMS_ARN --region ${{ secrets.AWS_REGION }}
-        echo "KMS key found: $KMS_ARN"
+      - name: Terraform init
+        run: terraform -chdir="${TF_WORKING_DIR}" init -input=false -no-color
 
-    # 15. Верифікація існування ECR репозиторію
-    - name: Verify ECR Repo Existence
-      id: verify_ecr
-      if: steps.apply_infra.outcome == 'success'
-      run: |
-        echo "Attempting to describe ECR repository: ${{ env.ECR_REPOSITORY }}"
-        aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --region ${{ secrets.AWS_REGION }}
-        echo "ECR repository found: ${{ env.ECR_REPOSITORY }}"
+      - name: Select Terraform workspace
+        run: |
+          terraform -chdir="${TF_WORKING_DIR}" workspace select "${DEPLOY_ENVIRONMENT}" \
+            || terraform -chdir="${TF_WORKING_DIR}" workspace new "${DEPLOY_ENVIRONMENT}"
 
-    # --- Стадія збірки і пушу образу ---
+      - name: Terraform plan
+        run: |
+          terraform -chdir="${TF_WORKING_DIR}" plan \
+            -out=tfplan \
+            -input=false \
+            -no-color \
+            -var="project_name=${PROJECT_NAME}"
+          terraform -chdir="${TF_WORKING_DIR}" show -no-color tfplan > "${TF_WORKING_DIR}/tfplan.txt"
 
-    # 16. Логін до Amazon ECR
-    - name: Login to Amazon ECR
-      id: login-ecr
-      if: steps.apply_infra.outcome == 'success'
-      uses: aws-actions/amazon-ecr-login@v2
+      - name: Upload Terraform plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ env.DEPLOY_ENVIRONMENT }}
+          path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
+          retention-days: 14
 
-    # 17. Збірка, тег, та Push Docker Image
-    - name: Build, Tag, and Push Docker Image
-      id: build-image
-      if: steps.apply_infra.outcome == 'success'
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f Dockerfile .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      - name: Comment Terraform plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          PLAN_PATH: ${{ env.TF_WORKING_DIR }}/tfplan.txt
+          PLAN_ENVIRONMENT: ${{ env.DEPLOY_ENVIRONMENT }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = `<!-- terraform-plan-${process.env.PLAN_ENVIRONMENT} -->`;
+            const rawPlan = fs.readFileSync(process.env.PLAN_PATH, 'utf8');
+            const plan = rawPlan.length > 60000 ? `${rawPlan.slice(0, 60000)}\n\n[plan truncated]` : rawPlan;
+            const body = [
+              marker,
+              `### Terraform plan: \`${process.env.PLAN_ENVIRONMENT}\``,
+              '',
+              '<details><summary>Show plan</summary>',
+              '',
+              '```terraform',
+              plan,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
 
-    # --- Стадія сканування образу ---
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
+            const existing = comments.data.find(comment => comment.user.type === 'Bot' && comment.body.includes(marker));
 
-    # 18. Сканування образу з Snyk
-    - name: Scan Docker Image (Snyk Container)
-      if: steps.build-image.outcome == 'success'
-      env:
-        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        snyk container test $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG --file=Dockerfile --severity-threshold=high
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
 
-    # --- Стадія оновлення Lambda ---
-    # Оновлює Lambda функцію для використання конкретного тега образу.
+  deploy-main:
+    name: Apply and Deploy Production
+    runs-on: ubuntu-latest
+    needs: security-and-validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: prod
+    env:
+      DEPLOY_ENVIRONMENT: prod
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
-    # 19. Terraform Apply (Оновлення Lambda Image)
-    - name: Terraform Apply Lambda Image Update
-      id: apply_lambda_update
-      if: steps.build-image.outcome == 'success' && github.ref == 'refs/heads/main'
-      run: |
-        terraform -chdir="${{ env.TF_WORKING_DIR }}" apply -auto-approve -no-color -input=false \
-          -var="lambda_image_uri=${{ steps.build-image.outputs.image_uri }}"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    # --- Стадія оновлення Frontend ---
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-    # 20. Отримання Terraform Outputs для Frontend
-    - name: Get Terraform Outputs for Frontend
-      id: tf-outputs
-      if: steps.apply_lambda_update.outcome == 'success' && github.ref == 'refs/heads/main'
-      run: |
-        echo "frontend_bucket_name=$(terraform -chdir='${{ env.TF_WORKING_DIR }}' output -raw frontend_s3_bucket_name)" >> $GITHUB_OUTPUT
-        echo "api_invoke_url=$(terraform -chdir='${{ env.TF_WORKING_DIR }}' output -raw api_gateway_invoke_url)" >> $GITHUB_OUTPUT
+      - name: Set up Node.js for Snyk
+        if: env.SNYK_TOKEN != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-    # 21. Оновлення API Endpoint в Javascript
-    - name: Update API Endpoint in Javascript
-      id: update-js
-      if: steps.tf-outputs.outcome == 'success' && github.ref == 'refs/heads/main'
-      run: |
-        API_ENDPOINT="${{ steps.tf-outputs.outputs.api_invoke_url }}"
-        sed -i "s|%%API_GATEWAY_INVOKE_URL%%|${API_ENDPOINT}|g" frontend/script.js
+      - name: Install Snyk CLI
+        if: env.SNYK_TOKEN != ''
+        run: npm install -g snyk
 
-    # 22. Розгортання Frontend до S3
-    - name: Deploy Frontend Files to S3
-      id: deploy-frontend
-      if: steps.tf-outputs.outcome == 'success' && github.ref == 'refs/heads/main'
-      run: |
-        aws s3 sync frontend/ s3://${{ steps.tf-outputs.outputs.frontend_bucket_name }} --delete
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: terraform -chdir="${TF_WORKING_DIR}" init -input=false -no-color
+
+      - name: Select Terraform workspace
+        run: |
+          terraform -chdir="${TF_WORKING_DIR}" workspace select "${DEPLOY_ENVIRONMENT}" \
+            || terraform -chdir="${TF_WORKING_DIR}" workspace new "${DEPLOY_ENVIRONMENT}"
+
+      - name: Bootstrap KMS and ECR
+        run: |
+          terraform -chdir="${TF_WORKING_DIR}" apply \
+            -target=module.kms \
+            -target=module.ecr \
+            -auto-approve \
+            -input=false \
+            -no-color \
+            -var="project_name=${PROJECT_NAME}"
+
+      - name: Read ECR outputs
+        id: ecr
+        run: |
+          echo "repository_name=$(terraform -chdir="${TF_WORKING_DIR}" output -raw ecr_repository_name)" >> "${GITHUB_OUTPUT}"
+          echo "repository_url=$(terraform -chdir="${TF_WORKING_DIR}" output -raw ecr_repository_url)" >> "${GITHUB_OUTPUT}"
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Lambda image
+        id: build-image
+        run: |
+          image_tag="sha-${GITHUB_SHA}"
+          image_uri="${{ steps.ecr.outputs.repository_url }}:${image_tag}"
+          docker build --platform linux/amd64 -t "${image_uri}" -f Dockerfile .
+          echo "image_uri=${image_uri}" >> "${GITHUB_OUTPUT}"
+
+      - name: Scan Lambda image with Snyk
+        if: env.SNYK_TOKEN != ''
+        run: snyk container test "${{ steps.build-image.outputs.image_uri }}" --file=Dockerfile --severity-threshold=high
+
+      - name: Push Lambda image
+        run: docker push "${{ steps.build-image.outputs.image_uri }}"
+
+      - name: Capture currently deployed Lambda image
+        id: capture-current-image
+        run: |
+          function_name="$(terraform -chdir="${TF_WORKING_DIR}" output -raw lambda_function_name 2>/dev/null || echo "${PROJECT_NAME}-${DEPLOY_ENVIRONMENT}-lambda")"
+          previous_image_uri="$(aws lambda get-function-configuration \
+            --function-name "${function_name}" \
+            --query 'Code.ImageUri' \
+            --output text 2>/dev/null || true)"
+          echo "function_name=${function_name}" >> "${GITHUB_OUTPUT}"
+          echo "previous_image_uri=${previous_image_uri}" >> "${GITHUB_OUTPUT}"
+
+      - name: Terraform apply workload with new Lambda image
+        id: apply-workload
+        run: |
+          terraform -chdir="${TF_WORKING_DIR}" apply \
+            -auto-approve \
+            -input=false \
+            -no-color \
+            -var="project_name=${PROJECT_NAME}" \
+            -var="lambda_image_uri=${{ steps.build-image.outputs.image_uri }}"
+
+      - name: Read deployment outputs
+        id: deployment-outputs
+        run: |
+          echo "api_gateway_invoke_url=$(terraform -chdir="${TF_WORKING_DIR}" output -raw api_gateway_invoke_url)" >> "${GITHUB_OUTPUT}"
+          echo "api_gateway_health_url=$(terraform -chdir="${TF_WORKING_DIR}" output -raw api_gateway_health_url)" >> "${GITHUB_OUTPUT}"
+          echo "frontend_bucket_name=$(terraform -chdir="${TF_WORKING_DIR}" output -raw frontend_s3_bucket_name)" >> "${GITHUB_OUTPUT}"
+
+      - name: Wait for Lambda update
+        run: aws lambda wait function-updated --function-name "${{ steps.capture-current-image.outputs.function_name }}"
+
+      - name: Smoke test Lambda health endpoint
+        run: curl --fail --silent --show-error --max-time 20 "${{ steps.deployment-outputs.outputs.api_gateway_health_url }}"
+
+      - name: Run DAST scan with OWASP ZAP
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: ${{ steps.deployment-outputs.outputs.api_gateway_invoke_url }}
+          fail_action: true
+          allow_issue_writing: false
+          artifact_name: zap-baseline-prod
+          cmd_options: "-a -m 5 -I"
+
+      - name: Roll back Lambda image on failed deployment validation
+        if: failure() && steps.capture-current-image.outputs.previous_image_uri != '' && steps.capture-current-image.outputs.previous_image_uri != 'None'
+        run: |
+          previous_image_uri="${{ steps.capture-current-image.outputs.previous_image_uri }}"
+          function_name="${{ steps.capture-current-image.outputs.function_name }}"
+          aws lambda update-function-code \
+            --function-name "${function_name}" \
+            --image-uri "${previous_image_uri}"
+          aws lambda wait function-updated --function-name "${function_name}"
+          terraform -chdir="${TF_WORKING_DIR}" apply \
+            -auto-approve \
+            -input=false \
+            -no-color \
+            -var="project_name=${PROJECT_NAME}" \
+            -var="lambda_image_uri=${previous_image_uri}"
+
+      - name: Prepare frontend artifact
+        if: success()
+        run: |
+          mkdir -p dist/frontend
+          cp frontend/* dist/frontend/
+          sed -i "s|%%API_GATEWAY_INVOKE_URL%%|${{ steps.deployment-outputs.outputs.api_gateway_invoke_url }}|g" dist/frontend/script.js
+
+      - name: Deploy frontend to S3
+        if: success()
+        run: aws s3 sync dist/frontend/ "s3://${{ steps.deployment-outputs.outputs.frontend_bucket_name }}" --delete

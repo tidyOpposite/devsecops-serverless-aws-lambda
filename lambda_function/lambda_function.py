@@ -23,6 +23,10 @@ OUTPUT_BUCKET = os.environ.get(
 )  # Бакет для згенерованих GIF
 # Регіон AWS (важливо для генерації presigned URL)
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+try:
+    PRESIGNED_URL_TTL_SECONDS = int(os.environ.get("PRESIGNED_URL_TTL_SECONDS", "3600"))
+except ValueError:
+    PRESIGNED_URL_TTL_SECONDS = 3600
 
 # Шлях до тимчасової папки Lambda (/tmp має обмеження по розміру)
 TEMP_FOLDER_BASE = "/tmp"
@@ -275,10 +279,27 @@ def lambda_handler(event, context):
     output_gif_local_path = None  # Шлях до згенерованого GIF у /tmp
 
     try:
-        # Перевірка методу запиту (очікуємо POST)
-        http_method = event.get("httpMethod", "GET") # API Gateway v1 payload
-        if not http_method: # Для API Gateway v2 HTTP API payload
-            http_method = event.get("requestContext", {}).get("http", {}).get("method")
+        # Перевірка методу запиту (очікуємо POST для обробки відео)
+        http_method = event.get("httpMethod") or event.get("requestContext", {}).get(
+            "http", {}
+        ).get("method", "GET")
+        path = event.get("rawPath") or event.get("path") or "/"
+
+        if http_method == "GET" and path.rstrip("/") == "/health":
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*",
+                },
+                "body": json.dumps(
+                    {
+                        "success": True,
+                        "status": "ok",
+                        "environment": os.environ.get("ENVIRONMENT", "unknown"),
+                    }
+                ),
+            }
 
         if http_method != "POST":
             logger.warning(f"Unsupported HTTP method: {http_method}")
@@ -384,7 +405,9 @@ def lambda_handler(event, context):
             raise RuntimeError("Could not upload generated GIF to S3.") from e
 
         # --- 5. Генерація Presigned URL ---
-        download_url = create_presigned_url(OUTPUT_BUCKET, output_gif_s3_key)
+        download_url = create_presigned_url(
+            OUTPUT_BUCKET, output_gif_s3_key, PRESIGNED_URL_TTL_SECONDS
+        )
         if not download_url:
             # Навіть якщо URL не згенерувався, GIF вже в S3.
             # Можна повернути успіх, але без URL, або помилку 500.

@@ -1,41 +1,74 @@
-# Визначення вихідних значень (наприклад, URL API).
+output "environment" {
+  description = "Active deployment environment resolved from the Terraform workspace."
+  value       = local.environment
+}
+
+output "terraform_workspace" {
+  description = "Terraform workspace backing this environment."
+  value       = terraform.workspace
+}
+
+output "api_gateway_health_url" {
+  description = "Health endpoint used by CI smoke tests and DAST readiness checks."
+  value       = module.api_gateway.health_url
+}
 
 output "api_gateway_invoke_url" {
-  description = "URL для виклику API Gateway"
-  value       = aws_apigatewayv2_stage.default_stage.invoke_url
+  description = "Base URL for invoking the API Gateway default stage."
+  value       = module.api_gateway.invoke_url
+}
+
+output "ecr_repository_name" {
+  description = "Name of the ECR repository for Lambda images."
+  value       = module.ecr.repository_name
 }
 
 output "ecr_repository_url" {
-  description = "URL ECR репозиторію для Lambda образу"
-  value       = aws_ecr_repository.lambda_repo.repository_url
-}
-
-output "output_s3_bucket_name" {
-  description = "Назва S3 бакету для згенерованих GIF"
-  value       = aws_s3_bucket.output_bucket.bucket
+  description = "URL of the ECR repository for Lambda images."
+  value       = module.ecr.repository_url
 }
 
 output "frontend_s3_bucket_name" {
-  description = "Назва S3 бакету для статичного фронтенду"
-  value       = aws_s3_bucket.frontend_bucket.bucket
+  description = "Name of the S3 bucket hosting the static frontend."
+  value       = module.storage.frontend_bucket_name
 }
 
 output "frontend_s3_website_endpoint" {
-  description = "URL ендпоінту статичного веб-сайту на S3"
-  value       = aws_s3_bucket_website_configuration.frontend_website.website_endpoint
+  description = "Raw S3 website endpoint for the static frontend."
+  value       = module.storage.frontend_website_endpoint
 }
 
-output "log_s3_bucket_name" {
-  description = "Назва S3 бакету для логів доступу"
-  value       = aws_s3_bucket.log_bucket.bucket
-}
-
-output "lambda_dlq_sqs_url" {
-  description = "URL SQS черги для Lambda DLQ"
-  value       = aws_sqs_queue.lambda_dlq.id
+output "frontend_s3_website_url" {
+  description = "HTTP URL for the static frontend."
+  value       = module.storage.frontend_website_url
 }
 
 output "kms_key_arn" {
-  description = "ARN створеного KMS ключа"
-  value       = aws_kms_key.encryption_key.arn
+  description = "ARN of the customer-managed KMS key used by workload resources."
+  value       = module.kms.key_arn
+}
+
+output "lambda_current_image_uri" {
+  description = "Image URI currently configured on the Lambda function."
+  value       = module.lambda.image_uri
+}
+
+output "lambda_dlq_sqs_url" {
+  description = "URL of the SQS dead-letter queue configured for Lambda."
+  value       = module.lambda.dlq_url
+}
+
+output "lambda_function_name" {
+  description = "Name of the deployed Lambda function."
+  value       = module.lambda.function_name
+}
+
+output "log_s3_bucket_name" {
+  description = "Name of the S3 bucket receiving access logs."
+  value       = module.storage.log_bucket_name
+}
+
+output "output_s3_bucket_name" {
+  description = "Name of the private S3 bucket for generated GIF files."
+  value       = module.storage.output_bucket_name
 }

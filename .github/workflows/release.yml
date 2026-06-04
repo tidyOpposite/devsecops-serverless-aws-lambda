@@ -1,0 +1,34 @@
+name: Publish GitHub Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release notes
+        id: notes
+        run: |
+          notes_path="docs/release-${GITHUB_REF_NAME}.md"
+          if [ ! -f "${notes_path}" ]; then
+            notes_path="CHANGELOG.md"
+          fi
+          echo "path=${notes_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: ${{ steps.notes.outputs.path }}
+          draft: false
+          prerelease: false
