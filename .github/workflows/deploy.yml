@@ -1,12 +1,9 @@
 # Назва workflow
 name: Deploy GIF Generator to AWS
 
-# Тригери
+# Тригер: запуск вручну з вкладки GitHub Actions.
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
 
 # Дозволи для OIDC
 permissions:
