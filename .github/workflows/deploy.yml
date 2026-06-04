@@ -29,7 +29,7 @@ jobs:
 
     # 2. Конфігурація AWS Credentials (OIDC)
     - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
+      uses: aws-actions/configure-aws-credentials@v6
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME_ARN }}
         aws-region: ${{ secrets.AWS_REGION }}
