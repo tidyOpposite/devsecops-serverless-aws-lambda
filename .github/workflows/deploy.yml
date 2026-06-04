@@ -1,0 +1,201 @@
+# Назва workflow
+name: Deploy GIF Generator to AWS
+
+# Тригери
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# Дозволи для OIDC
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-scan-deploy:
+    runs-on: ubuntu-latest
+    env:
+      # Визначаємо змінні середовища для всієї задачі
+      ECR_REPOSITORY: ${{ vars.PROJECT_NAME || 'gif-generator' }}-lambda-repo
+      PYTHON_VERSION: '3.9'
+      TF_WORKING_DIR: ./terraform # Робоча директорія Terraform
+
+    steps:
+    # 1. Checkout code
+    - name: Checkout Repository Code
+      uses: actions/checkout@v4
+
+    # 2. Конфігурація AWS Credentials (OIDC)
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    # 3. Встановлення Python
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    # 4. Встановлення Node.js (для Snyk CLI)
+    - name: Set up Node.js for Snyk
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    # 5. Встановлення залежностей (Python tools, Lambda reqs, Snyk CLI)
+    - name: Install Dependencies
+      run: |
+        echo "Installing security scanners..."
+        python -m pip install --upgrade pip
+        pip install bandit
+        echo "Installing Lambda function requirements..."
+        pip install -r lambda_function/requirements.txt
+        echo "Installing Snyk CLI via npm..."
+        npm install -g snyk
+        echo "Snyk CLI installed."
+        snyk --version
+
+    # --- Стадія сканування безпеки ---
+
+    # 6. SAST сканування з Bandit
+    - name: Run SAST Scan (Bandit)
+      run: bandit -r lambda_function/ -ll # Зупиняти пайплайн при виявленні проблем
+
+    # 7. SCA сканування з Snyk (залежності)
+    - name: Run SCA Scan (Snyk Dependencies)
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      run: snyk test --file=lambda_function/requirements.txt --severity-threshold=high --fail-on=all
+
+    # 8. Встановлення Terraform
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    # 9. IaC сканування з Trivy
+    - name: Run IaC Scan (Trivy)
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'config'
+        scan-ref: '${{ env.TF_WORKING_DIR }}'
+        format: 'table'
+        exit-code: '1'
+        ignore-unfixed: false
+        severity: 'HIGH,CRITICAL'
+
+    # --- Стадія розгортання інфраструктури (Ініціалізація) ---
+    # Створює/оновлює інфраструктуру, включаючи ECR репозиторій.
+    # Lambda за замовчуванням використовує тег :latest, якщо URI образу не надано.
+
+    # 10. Ініціалізація Terraform
+    - name: Terraform Init
+      id: init
+      run: terraform -chdir="${{ env.TF_WORKING_DIR }}" init -no-color # Added -no-color
+
+    # 11. Валидація Terraform
+    - name: Terraform Validate
+      id: validate
+      run: terraform -chdir="${{ env.TF_WORKING_DIR }}" validate -no-color
+
+    # 12. Планування Terraform
+    - name: Terraform Plan
+      id: plan
+      run: terraform -chdir="${{ env.TF_WORKING_DIR }}" plan -no-color -input=false # Added -input=false
+
+    # 13. Застосування початкової інфраструктури
+    - name: Terraform Apply Initial Infrastructure
+      id: apply_infra
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: terraform -chdir="${{ env.TF_WORKING_DIR }}" apply -auto-approve -no-color -input=false # Added -input=false
+
+    # 14. Верифікація існування KMS Key
+    - name: Verify KMS Key Existence
+      id: verify_kms
+      if: steps.apply_infra.outcome == 'success' || github.event_name == 'pull_request'
+      run: |
+        echo "Attempting to describe KMS key..."
+        KMS_ARN=$(terraform -chdir='${{ env.TF_WORKING_DIR }}' output -raw kms_key_arn)
+        aws kms describe-key --key-id $KMS_ARN --region ${{ secrets.AWS_REGION }}
+        echo "KMS key found: $KMS_ARN"
+
+    # 15. Верифікація існування ECR репозиторію
+    - name: Verify ECR Repo Existence
+      id: verify_ecr
+      if: steps.apply_infra.outcome == 'success' || github.event_name == 'pull_request'
+      run: |
+        echo "Attempting to describe ECR repository: ${{ env.ECR_REPOSITORY }}"
+        aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --region ${{ secrets.AWS_REGION }}
+        echo "ECR repository found: ${{ env.ECR_REPOSITORY }}"
+
+    # --- Стадія збірки і пушу образу ---
+
+    # 16. Логін до Amazon ECR
+    - name: Login to Amazon ECR
+      id: login-ecr
+      if: steps.apply_infra.outcome == 'success' || github.event_name == 'pull_request'
+      uses: aws-actions/amazon-ecr-login@v2
+
+    # 17. Збірка, тег, та Push Docker Image
+    - name: Build, Tag, and Push Docker Image
+      id: build-image
+      if: steps.apply_infra.outcome == 'success' || github.event_name == 'pull_request'
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f Dockerfile .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    # --- Стадія сканування образу ---
+
+    # 18. Сканування образу з Snyk
+    - name: Scan Docker Image (Snyk Container)
+      if: steps.build-image.outcome == 'success'
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        snyk container test $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG --file=Dockerfile --severity-threshold=high
+
+    # --- Стадія оновлення Lambda ---
+    # Оновлює Lambda функцію для використання конкретного тега образу.
+
+    # 19. Terraform Apply (Оновлення Lambda Image)
+    - name: Terraform Apply Lambda Image Update
+      id: apply_lambda_update
+      if: steps.build-image.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        terraform -chdir="${{ env.TF_WORKING_DIR }}" apply -auto-approve -no-color -input=false \
+          -var="lambda_image_uri=${{ steps.build-image.outputs.image_uri }}"
+
+    # --- Стадія оновлення Frontend ---
+
+    # 20. Отримання Terraform Outputs для Frontend
+    - name: Get Terraform Outputs for Frontend
+      id: tf-outputs
+      if: steps.apply_lambda_update.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        echo "frontend_bucket_name=$(terraform -chdir='${{ env.TF_WORKING_DIR }}' output -raw frontend_s3_bucket_name)" >> $GITHUB_OUTPUT
+        echo "api_invoke_url=$(terraform -chdir='${{ env.TF_WORKING_DIR }}' output -raw api_gateway_invoke_url)" >> $GITHUB_OUTPUT
+
+    # 21. Оновлення API Endpoint в Javascript
+    - name: Update API Endpoint in Javascript
+      id: update-js
+      if: steps.tf-outputs.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        API_ENDPOINT="${{ steps.tf-outputs.outputs.api_invoke_url }}"
+        sed -i "s|%%API_GATEWAY_INVOKE_URL%%|${API_ENDPOINT}|g" frontend/script.js
+
+    # 22. Розгортання Frontend до S3
+    - name: Deploy Frontend Files to S3
+      id: deploy-frontend
+      if: steps.tf-outputs.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        aws s3 sync frontend/ s3://${{ steps.tf-outputs.outputs.frontend_bucket_name }} --delete
