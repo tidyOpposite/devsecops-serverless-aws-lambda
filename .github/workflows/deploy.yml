@@ -73,7 +73,7 @@ jobs:
 
     # 8. Встановлення Terraform
     - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
+      uses: hashicorp/setup-terraform@v4
 
     # 9. IaC сканування з Trivy
     - name: Run IaC Scan (Trivy)
