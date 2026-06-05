@@ -13,6 +13,19 @@ This repository does not include sample Lambda application source code. The
 pipeline expects a prebuilt immutable Lambda container image through
 `LAMBDA_IMAGE_URI`.
 
+## Product Contract
+
+The product boundary is intentionally narrow: `devsecops` is the user-facing
+CLI for creating, validating, rendering, and diagnosing a secure AWS Lambda
+delivery pipeline. Terraform modules, GitHub Actions workflows, AWS resources,
+and scanners remain transparent execution layers that the CLI configures and
+checks.
+
+`.devsecops-pipeline.toml` is local source configuration. Files written by
+`devsecops render`, `devsecops report`, and `devsecops github-setup --write`
+are CLI-owned generated artifacts. Do not edit generated files directly for
+durable changes; update the local config and regenerate them.
+
 ## Architecture
 
 ```mermaid
@@ -126,6 +139,8 @@ The CLI is intentionally dependency-free for core flows, so it can run before a
 Python environment, Terraform backend, GitHub repository, or AWS credentials are
 fully configured.
 
+The same first-run path is also shown in `devsecops --help`.
+
 Useful commands:
 
 ```bash
@@ -182,6 +197,10 @@ dist/devsecops/setup-checklist.md
 ```
 
 `devsecops report` writes `dist/devsecops/readiness-report.md`.
+
+Generated artifacts include CLI-owned headers and are ignored by Git. See
+[Generated artifacts](docs/generated-artifacts.md) for the source-versus-output
+contract.
 
 The CLI creates local snapshots before commands that overwrite CLI-owned
 configuration or generated artifacts: `init`, `compose`, `set`, `preset`,
@@ -398,6 +417,8 @@ curl "$(terraform output -raw api_gateway_health_url)"
 * [AWS cost estimation](docs/cost-estimation.md)
 * [Troubleshooting guide](docs/troubleshooting.md)
 * [Product roadmap](ROADMAP.md)
+* [Command inventory](docs/command-inventory.md)
+* [Generated artifacts](docs/generated-artifacts.md)
 * [AWS OIDC and IAM policy guidance](AWS_policy.md)
 * [Changelog](CHANGELOG.md)
 * [v0.2.0 release notes](docs/release-v0.2.0.md)

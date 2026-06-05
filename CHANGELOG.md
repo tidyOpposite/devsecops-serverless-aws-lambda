@@ -22,9 +22,13 @@ semantic versioning.
   runs.
 * Documentation now positions the terminal CLI as the primary product surface
   and Terraform/GitHub Actions as the execution layer behind it.
+* CLI package descriptions and top-level help now describe the same
+  CLI-product first-run path as the README.
 
 ### Added
 
+* Product roadmap, command inventory, and generated-artifact ownership
+  documentation for the Milestone 0 product contract.
 * Dependency-free terminal CLI with main menu, setup wizard, readiness report,
   render command, Terraform plan wrapper, backend bootstrap helper, and control
   explanations.

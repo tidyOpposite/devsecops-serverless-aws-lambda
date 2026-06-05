@@ -61,6 +61,7 @@ Gaps that make the project feel raw:
 ## Milestone 0: Stabilize The Product Contract
 
 Target: immediate cleanup before the next feature release.
+Status: implemented in `Unreleased`.
 
 Goals:
 
@@ -72,19 +73,19 @@ Goals:
 
 Deliverables:
 
-* Roadmap document.
-* README link to the roadmap.
-* Short product-positioning section in README if the existing introduction
+- [x] Roadmap document.
+- [x] README link to the roadmap.
+- [x] Short product-positioning section in README if the existing introduction
   becomes too broad.
-* Command inventory that marks each command as stable, experimental, alias, or
-  internal-support.
-* Documentation for generated artifact ownership.
+- [x] Command inventory that marks each command as stable, experimental, alias, or
+  support.
+- [x] Documentation for generated artifact ownership.
 
 Acceptance criteria:
 
-* A new user can understand the product boundary in under five minutes.
-* The README quick start and `devsecops --help` describe the same path.
-* Generated files are clearly labeled as CLI-owned.
+- [x] A new user can understand the product boundary in under five minutes.
+- [x] The README quick start and `devsecops --help` describe the same path.
+- [x] Generated files are clearly labeled as CLI-owned.
 
 ## Milestone 1: Clean Configuration Workflow
 

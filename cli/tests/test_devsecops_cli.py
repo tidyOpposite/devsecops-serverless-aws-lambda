@@ -54,9 +54,36 @@ class DevSecOpsCliTests(unittest.TestCase):
 
     def test_tfvars_contains_environment_config(self) -> None:
         rendered = cli.terraform_tfvars(cli.default_config())
+        self.assertIn("CLI-owned generated file", rendered)
         self.assertIn('project_name = "devsecops-pipeline"', rendered)
         self.assertIn("environment_config = {", rendered)
         self.assertIn("prod = {", rendered)
+
+    def test_generated_artifacts_carry_cli_owned_notice(self) -> None:
+        cfg = cli.default_config()
+        artifacts = [
+            cli.terraform_tfvars(cfg),
+            cli.backend_tf(cfg),
+            cli.github_variables(cfg),
+            cli.github_setup_script(cfg),
+            cli.checklist(cfg),
+            cli.markdown_report(cfg, []),
+        ]
+
+        for artifact in artifacts:
+            self.assertIn("CLI-owned generated", artifact)
+            self.assertIn("Do not edit directly", artifact)
+
+    def test_help_documents_product_contract_and_first_run(self) -> None:
+        help_text = cli.build_parser().format_help()
+        self.assertIn("CLI product", help_text)
+        self.assertIn("Product boundary:", help_text)
+        self.assertIn("devsecops init", help_text)
+        self.assertIn("devsecops readiness", help_text)
+        self.assertIn("devsecops render", help_text)
+        self.assertIn("devsecops report", help_text)
+        self.assertIn("docs/command-inventory.md", help_text)
+        self.assertIn("docs/generated-artifacts.md", help_text)
 
     def test_readiness_score_weights_warn_as_half_credit(self) -> None:
         checks = [
