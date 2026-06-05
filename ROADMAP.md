@@ -90,6 +90,7 @@ Acceptance criteria:
 ## Milestone 1: Clean Configuration Workflow
 
 Target release: `v0.3.0`.
+Status: implemented in `Unreleased`.
 
 Problem: `init`, `set`, `preset`, `compose`, `validate-config`, and `render`
 are useful, but the clean configuration lifecycle is implicit.
@@ -108,21 +109,21 @@ devsecops render
 
 Deliverables:
 
-* Add a `schema_version` field to `.devsecops-pipeline.toml`.
-* Add deterministic clean-config generation with no secrets and no generated
+- [x] Add a `schema_version` field to `.devsecops-pipeline.toml`.
+- [x] Add deterministic clean-config generation with no secrets and no generated
   output mixed into source configuration.
-* Add `config new`, `config reset`, `config diff`, and `config schema`.
-* Keep existing commands working while steering users toward the grouped
+- [x] Add `config new`, `config reset`, `config diff`, and `config schema`.
+- [x] Keep existing commands working while steering users toward the grouped
   `config` workflow.
-* Add idempotency tests for clean config generation and rendering.
-* Add a migration scaffold for future config schema versions.
+- [x] Add idempotency tests for clean config generation and rendering.
+- [x] Add a migration scaffold for future config schema versions.
 
 Acceptance criteria:
 
-* A clean config can be generated non-interactively.
-* Running config generation and render twice produces no unexpected diff.
-* Validation catches bad values before Terraform or GitHub commands run.
-* No AWS secrets, GitHub secrets, tokens, or credentials are written to the
+- [x] A clean config can be generated non-interactively.
+- [x] Running config generation and render twice produces no unexpected diff.
+- [x] Validation catches bad values before Terraform or GitHub commands run.
+- [x] No AWS secrets, GitHub secrets, tokens, or credentials are written to the
   local config.
 
 ## Milestone 2: CLI UX Consolidation

@@ -9,7 +9,7 @@ and operator checklists.
 
 | File | Owner | Commit? | How to change it |
 | --- | --- | --- | --- |
-| `.devsecops-pipeline.toml` | CLI-managed local source config | No | Use `devsecops init`, `devsecops set`, `devsecops preset apply`, `devsecops compose`, or a careful manual edit followed by `devsecops validate-config`. |
+| `.devsecops-pipeline.toml` | CLI-managed local source config | No | Use `devsecops config new`, `devsecops config reset`, `devsecops set`, `devsecops preset apply`, `devsecops compose`, or a careful manual edit followed by `devsecops config validate`. |
 | `terraform/generated.auto.tfvars` | CLI-owned generated artifact | No | Update `.devsecops-pipeline.toml`, then run `devsecops render`. |
 | `dist/devsecops/backend.tf` | CLI-owned generated template | No | Update backend settings, then run `devsecops render`. Copy or adapt into `terraform/backend.tf` only after review. |
 | `dist/devsecops/github-variables.env` | CLI-owned generated helper | No | Update `.devsecops-pipeline.toml`, then run `devsecops render`. |
@@ -31,10 +31,11 @@ means:
 
 ## Source Config Versus Generated Output
 
-`.devsecops-pipeline.toml` is local source configuration. It should contain
-project settings, environment settings, feature flags, and backend names. It
-must not contain AWS credentials, GitHub tokens, Snyk tokens, private keys, or
-other secrets.
+`.devsecops-pipeline.toml` is local source configuration. It includes
+`schema_version = 1` so future versions can migrate deliberately. It should
+contain project settings, environment settings, feature flags, and backend
+names. It must not contain AWS credentials, GitHub tokens, Snyk tokens, private
+keys, or other secrets.
 
 Generated artifacts are outputs of that source config. They may contain
 non-secret values such as project names, regions, repository variable values,

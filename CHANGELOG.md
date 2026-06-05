@@ -24,11 +24,17 @@ semantic versioning.
   and Terraform/GitHub Actions as the execution layer behind it.
 * CLI package descriptions and top-level help now describe the same
   CLI-product first-run path as the README.
+* Recommended first-run workflow now uses `devsecops config new`,
+  `config validate`, and `config diff` before rendering.
 
 ### Added
 
 * Product roadmap, command inventory, and generated-artifact ownership
   documentation for the Milestone 0 product contract.
+* Schema-versioned clean configuration workflow with `devsecops config new`,
+  `show`, `validate`, `diff`, `reset`, and `schema`.
+* Config schema export, canonical config diffing, and a migration scaffold for
+  future config schema versions.
 * Dependency-free terminal CLI with main menu, setup wizard, readiness report,
   render command, Terraform plan wrapper, backend bootstrap helper, and control
   explanations.

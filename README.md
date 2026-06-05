@@ -129,9 +129,11 @@ PYTHONPATH=cli python3 -m devsecops_cli dashboard
 Recommended first run:
 
 ```bash
-devsecops init
-devsecops readiness
+devsecops config new --preset balanced
+devsecops config validate
+devsecops config diff
 devsecops render
+devsecops readiness
 devsecops report
 ```
 
@@ -148,7 +150,15 @@ devsecops dashboard     # full terminal dashboard with readiness categories
 devsecops dashboard --mode compact
 devsecops dashboard --watch --interval 10
 devsecops tui           # optional Rich/Textual UI bridge
-devsecops init          # interactive setup wizard
+devsecops config new --preset balanced # create clean local source config
+devsecops config show --format toml
+devsecops config show --format json
+devsecops config validate
+devsecops config diff
+devsecops config diff --preset strict
+devsecops config reset --preset minimal
+devsecops config schema
+devsecops init          # legacy interactive setup wizard
 devsecops compose       # choose controls and generate config/artifacts/report
 devsecops preset list   # show available policy profiles
 devsecops preset show strict
@@ -185,8 +195,9 @@ pipx install ".[tui]"
 devsecops tui
 ```
 
-The wizard writes `.devsecops-pipeline.toml`, which is intentionally ignored by
-Git. `devsecops render` writes:
+The clean configuration workflow writes `.devsecops-pipeline.toml`, which is
+intentionally ignored by Git and includes `schema_version = 1`.
+`devsecops render` writes:
 
 ```text
 terraform/generated.auto.tfvars
@@ -226,7 +237,7 @@ edits:
 devsecops set lambda_image_uri 123456789012.dkr.ecr.us-east-1.amazonaws.com/app:sha-a1b2c3
 devsecops set enable_dast true
 devsecops set environments.prod.lambda_timeout 300 --render
-devsecops validate-config
+devsecops config validate
 ```
 
 Presets provide a quick starting point:

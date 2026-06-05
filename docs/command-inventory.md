@@ -1,7 +1,7 @@
 # Command Inventory
 
 This document records the current `devsecops` command surface and the product
-status of each command. It is a Milestone 0 contract: users should know which
+status of each command. It is a product contract: users should know which
 commands are the preferred workflow, which commands are compatibility aliases,
 and which commands may still change.
 
@@ -19,9 +19,11 @@ and which commands may still change.
 The README quick start and `devsecops --help` use the same first-run path:
 
 ```bash
-devsecops init
-devsecops readiness
+devsecops config new --preset balanced
+devsecops config validate
+devsecops config diff
 devsecops render
+devsecops readiness
 devsecops report
 ```
 
@@ -32,15 +34,21 @@ Use `devsecops menu` when you prefer the interactive path.
 | Command | Status | Scope | Notes |
 | --- | --- | --- | --- |
 | `devsecops menu` | Stable | Interactive CLI | Opens the main terminal menu. Default command when no subcommand is passed. |
-| `devsecops init` | Stable | Configuration | Creates or updates `.devsecops-pipeline.toml`. Use `--defaults` for non-interactive default config generation. |
+| `devsecops init` | Alias | Configuration | Legacy interactive entry point for creating or updating `.devsecops-pipeline.toml`. Prefer `devsecops config new` for clean non-interactive config generation. |
 | `devsecops readiness` | Stable | Diagnostics | Shows scored readiness gaps and concrete next actions. |
 | `devsecops render` | Stable | Generation | Writes CLI-owned Terraform and GitHub helper artifacts. |
 | `devsecops report` | Stable | Reporting | Writes a CLI-owned Markdown readiness report. |
 | `devsecops dashboard` | Stable | Diagnostics | Prints a one-screen readiness dashboard. |
 | `devsecops doctor` | Stable | Diagnostics | Checks local readiness. `--deep` adds external Terraform/AWS checks and may vary by installed tools. |
-| `devsecops validate-config` | Stable | Configuration | Validates local config values without rendering. |
+| `devsecops validate-config` | Alias | Configuration | Compatibility command for `devsecops config validate`. |
 | `devsecops set` | Stable | Configuration | Sets one local config key. Use `--render` to regenerate artifacts after the update. |
-| `devsecops config` | Stable | Configuration | Prints the current local config. This command group is expected to grow in future milestones. |
+| `devsecops config` | Alias | Configuration | Compatibility shorthand for `devsecops config show`. |
+| `devsecops config show` | Stable | Configuration | Prints the current local source config as TOML or normalized JSON. |
+| `devsecops config new` | Stable | Configuration | Creates a clean schema-versioned config from a preset. Refuses to overwrite unless `--force` is passed. |
+| `devsecops config validate` | Stable | Configuration | Validates the local source config before Terraform or GitHub commands run. |
+| `devsecops config diff` | Stable | Configuration | Shows canonical TOML drift or compares the current config against a preset. |
+| `devsecops config reset` | Stable | Configuration | Resets local source config to a clean preset after taking a snapshot. |
+| `devsecops config schema` | Stable | Configuration | Prints the config schema contract as JSON or Markdown. |
 | `devsecops preset list` | Stable | Configuration | Lists policy presets. |
 | `devsecops preset show <name>` | Stable | Configuration | Prints a preset summary. |
 | `devsecops preset apply <name>` | Stable | Configuration | Applies a preset while preserving user-specific identity values. |

@@ -28,8 +28,100 @@ class DevSecOpsCliTests(unittest.TestCase):
             root = Path(tmpdir)
             cli.write_config(root, cfg)
             loaded = cli.load_config(root)
+            config_text = (root / cli.CONFIG_FILE).read_text(encoding="utf-8")
+        self.assertEqual(loaded["schema_version"], cli.CONFIG_SCHEMA_VERSION)
         self.assertEqual(loaded["project_name"], "abc-project")
         self.assertEqual(loaded["environments"]["prod"]["lambda_timeout"], 240)
+        self.assertIn("schema_version = 1", config_text)
+
+    def test_load_legacy_config_without_schema_version_migrates_to_current_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / cli.CONFIG_FILE).write_text('project_name = "legacy-app"\n', encoding="utf-8")
+            loaded = cli.load_config(root)
+
+        self.assertEqual(loaded["schema_version"], cli.CONFIG_SCHEMA_VERSION)
+        self.assertEqual(loaded["project_name"], "legacy-app")
+
+    def test_clean_config_has_no_secret_fields(self) -> None:
+        rendered = cli.dump_config_toml(cli.clean_config("balanced"))
+        forbidden = ["AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "GITHUB_TOKEN", "SNYK_TOKEN", "PRIVATE_KEY"]
+        for token in forbidden:
+            self.assertNotIn(token, rendered)
+
+    def test_config_new_show_schema_diff_and_reset_workflow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(cli, "repo_root", return_value=root):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.cmd_config(argparse.Namespace(config_command="new", preset="minimal", force=False, render=False)), 0)
+
+                created = root / cli.CONFIG_FILE
+                self.assertTrue(created.exists())
+                self.assertIn("schema_version = 1", created.read_text(encoding="utf-8"))
+
+                show_json = io.StringIO()
+                with redirect_stdout(show_json):
+                    self.assertEqual(cli.cmd_config(argparse.Namespace(config_command="show", format="json")), 0)
+                self.assertEqual(json.loads(show_json.getvalue())["environments"]["dev"]["lambda_memory_size"], 512)
+
+                schema_json = io.StringIO()
+                with redirect_stdout(schema_json):
+                    self.assertEqual(cli.cmd_config(argparse.Namespace(config_command="schema", format="json")), 0)
+                self.assertEqual(json.loads(schema_json.getvalue())["schema_version"], cli.CONFIG_SCHEMA_VERSION)
+
+                diff_output = io.StringIO()
+                with redirect_stdout(diff_output):
+                    self.assertEqual(cli.cmd_config(argparse.Namespace(config_command="diff", preset=None, exit_code=True)), 0)
+                self.assertIn("No config diff detected", diff_output.getvalue())
+
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.cmd_config(argparse.Namespace(config_command="reset", preset="balanced", render=False)), 0)
+                reset = cli.load_config(root)
+                self.assertEqual(reset["environments"]["dev"]["lambda_memory_size"], 1024)
+
+    def test_config_new_refuses_existing_config_without_force(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.clean_config("minimal"))
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.cmd_config(argparse.Namespace(config_command="new", preset="balanced", force=False, render=False))
+
+        self.assertEqual(result, 1)
+        self.assertIn("already exists", buffer.getvalue())
+
+    def test_config_diff_reports_canonical_drift_and_preset_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.clean_config("minimal"))
+            config_file = root / cli.CONFIG_FILE
+            config_file.write_text(config_file.read_text(encoding="utf-8") + "# manual note\n", encoding="utf-8")
+
+            canonical_diff = cli.config_file_diff(root)
+            preset_diff = cli.config_preset_diff(root, "balanced")
+
+        self.assertIn("-# manual note", canonical_diff)
+        self.assertIn("preset:balanced", preset_diff)
+        self.assertIn("lambda_memory_size = 1024", preset_diff)
+
+    def test_clean_config_and_render_are_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(cli, "repo_root", return_value=root):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.cmd_config(argparse.Namespace(config_command="new", preset="balanced", force=False, render=True)), 0)
+                first_config = (root / cli.CONFIG_FILE).read_text(encoding="utf-8")
+                first_tfvars = (root / cli.GENERATED_TFVARS).read_text(encoding="utf-8")
+
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.cmd_config(argparse.Namespace(config_command="reset", preset="balanced", render=True)), 0)
+                second_config = (root / cli.CONFIG_FILE).read_text(encoding="utf-8")
+                second_tfvars = (root / cli.GENERATED_TFVARS).read_text(encoding="utf-8")
+
+        self.assertEqual(first_config, second_config)
+        self.assertEqual(first_tfvars, second_tfvars)
 
     def test_nested_set_and_parse(self) -> None:
         cfg = cli.default_config()
@@ -78,9 +170,11 @@ class DevSecOpsCliTests(unittest.TestCase):
         help_text = cli.build_parser().format_help()
         self.assertIn("CLI product", help_text)
         self.assertIn("Product boundary:", help_text)
-        self.assertIn("devsecops init", help_text)
-        self.assertIn("devsecops readiness", help_text)
+        self.assertIn("devsecops config new --preset balanced", help_text)
+        self.assertIn("devsecops config validate", help_text)
+        self.assertIn("devsecops config diff", help_text)
         self.assertIn("devsecops render", help_text)
+        self.assertIn("devsecops readiness", help_text)
         self.assertIn("devsecops report", help_text)
         self.assertIn("docs/command-inventory.md", help_text)
         self.assertIn("docs/generated-artifacts.md", help_text)
@@ -111,6 +205,20 @@ class DevSecOpsCliTests(unittest.TestCase):
         cfg["environments"]["dev"]["lambda_timeout"] = 901
         failures = [check for check in cli.validate_config(cfg) if check.status == "FAIL"]
         self.assertTrue(any(check.name == "dev.lambda_timeout" for check in failures))
+
+    def test_config_validate_command_fails_before_external_tools_on_bad_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = cli.default_config()
+            cfg["environments"]["dev"]["lambda_timeout"] = 901
+            cli.write_config(root, cfg)
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.cmd_config(argparse.Namespace(config_command="validate"))
+
+        self.assertEqual(result, 1)
+        self.assertIn("dev.lambda_timeout", buffer.getvalue())
 
     def test_preset_strict_enables_validation_controls(self) -> None:
         cfg = cli.preset_config("strict")
