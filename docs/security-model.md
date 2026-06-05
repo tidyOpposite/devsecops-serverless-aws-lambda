@@ -48,7 +48,7 @@ flowchart LR
 | Committing local operational data | `.devsecops-pipeline.toml`, `.devsecops/`, generated tfvars, and `dist/` artifacts are ignored by Git. |
 | Misconfigured pipeline hidden from operator | `devsecops readiness`, `[i] details`, `doctor`, and reports show scored readiness gaps and concrete fix actions. |
 | Static cloud credentials leaked from CI | GitHub Actions uses OIDC and short-lived STS credentials; no AWS access keys are stored in the repo. |
-| Unauthorized Terraform apply | Workflow applies only on `push` to `main`; PRs and manual dispatch produce plans only. Protect `main` with required checks. |
+| Unauthorized Terraform apply | Workflow applies only on manual `workflow_dispatch` deploy runs from `main`; PRs and direct pushes do not apply. Protect `main` with required checks. |
 | Concurrent Terraform state writes | S3 backend uses DynamoDB state locking. Bootstrap stack creates the lock table. |
 | Insecure Terraform configuration | Trivy scans Terraform modules for high and critical IaC findings. |
 | Vulnerable container image | Snyk can scan the configured Lambda image before deploy when `SNYK_TOKEN` is configured. |

@@ -25,7 +25,7 @@ not create AWS IAM roles for you.
 | Role | Used by | Purpose |
 | --- | --- | --- |
 | `AWS_PLAN_ROLE_TO_ASSUME_ARN` | Pull request and manual plan workflows | Read Terraform state, acquire state lock, refresh resources, and produce plans. |
-| `AWS_ROLE_TO_ASSUME_ARN` | `push` to `main` deploy workflow | Apply Terraform, read configured images for optional scanning, and perform rollback. |
+| `AWS_ROLE_TO_ASSUME_ARN` | Manual production deploy workflow from `main` | Apply Terraform, read configured images for optional scanning, and perform rollback. |
 
 Use separate roles where possible. The plan role should not be able to mutate
 workload resources beyond Terraform backend locking.

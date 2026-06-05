@@ -17,6 +17,9 @@ semantic versioning.
   `LAMBDA_IMAGE_URI`.
 * HTTP smoke testing and OWASP ZAP DAST are opt-in repository-variable gates.
 * Default project naming now uses `devsecops-pipeline`.
+* GitHub Actions no longer run on direct pushes to `main`; pull requests still
+  validate automatically, and production deploys are manual workflow dispatch
+  runs.
 * Documentation now positions the terminal CLI as the primary product surface
   and Terraform/GitHub Actions as the execution layer behind it.
 
