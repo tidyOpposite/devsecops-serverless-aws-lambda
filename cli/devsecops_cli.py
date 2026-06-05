@@ -44,7 +44,16 @@ SNAPSHOT_FILES = [
 SNAPSHOT_FILE_PATHS = {str(path) for path in SNAPSHOT_FILES}
 PROJECT_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{2,31}$")
 AWS_REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d$")
-PRESETS = {"minimal", "balanced", "strict"}
+PRESET_ORDER = ["minimal", "balanced", "strict", "enterprise", "student-demo"]
+PRESETS = set(PRESET_ORDER)
+PRESET_DESCRIPTIONS = {
+    "minimal": "Low-cost settings for early local and development experimentation.",
+    "balanced": "Default reference settings for a practical multi-environment pipeline.",
+    "strict": "Validation-focused settings with HTTP smoke testing and DAST enabled.",
+    "enterprise": "Locked-down CORS, longer log retention, and stricter production gates.",
+    "student-demo": "Small, simple settings for classroom demos and short-lived walkthroughs.",
+}
+ENVIRONMENTS = ["dev", "staging", "prod"]
 CONFIG_SET_PATHS = {
     "project_name",
     "aws_region",
@@ -58,7 +67,7 @@ CONFIG_SET_PATHS = {
     "backend.lock_table",
     "backend.workspace_key_prefix",
 }
-for _env_name in ["dev", "staging", "prod"]:
+for _env_name in ENVIRONMENTS:
     for _setting in [
         "lambda_memory_size",
         "lambda_timeout",
@@ -87,10 +96,23 @@ REQUIRED_BRANCH_CHECKS = [
 ]
 CANCEL_INPUTS = {"b", "back", "cancel", "q", "quit"}
 MENU_CANCEL_INPUTS = CANCEL_INPUTS | {"0"}
+ECR_IMAGE_RE = re.compile(
+    r"^(?P<registry>\d{12}\.dkr\.ecr\.(?P<region>[^.]+)\.amazonaws\.com)/"
+    r"(?P<repository>[^:@]+)(?::(?P<tag>[^@]+)|@(?P<digest>sha256:[A-Fa-f0-9]{64}))$"
+)
 
 
 class InputCancelled(Exception):
     """Raised when an interactive menu prompt is cancelled by the user."""
+
+
+@dataclass
+class EcrImageRef:
+    registry: str
+    region: str
+    repository: str
+    tag: str | None = None
+    digest: str | None = None
 
 
 class Style:
@@ -222,6 +244,64 @@ def preset_config(name: str) -> dict[str, Any]:
         cfg["environments"]["prod"]["api_throttling_burst_limit"] = 50
         cfg["environments"]["prod"]["api_throttling_rate_limit"] = 100
         cfg["environments"]["prod"]["cors_allowed_origins"] = ["https://app.example.com"]
+    elif name == "enterprise":
+        cfg["enable_http_validation"] = True
+        cfg["enable_dast"] = True
+        cfg["environments"] = {
+            "dev": {
+                "lambda_memory_size": 1536,
+                "lambda_timeout": 180,
+                "log_retention_days": 90,
+                "api_throttling_burst_limit": 20,
+                "api_throttling_rate_limit": 40,
+                "cors_allowed_origins": ["https://dev.example.com"],
+            },
+            "staging": {
+                "lambda_memory_size": 2048,
+                "lambda_timeout": 240,
+                "log_retention_days": 365,
+                "api_throttling_burst_limit": 40,
+                "api_throttling_rate_limit": 80,
+                "cors_allowed_origins": ["https://staging.example.com"],
+            },
+            "prod": {
+                "lambda_memory_size": 3072,
+                "lambda_timeout": 300,
+                "log_retention_days": 1095,
+                "api_throttling_burst_limit": 50,
+                "api_throttling_rate_limit": 100,
+                "cors_allowed_origins": ["https://app.example.com"],
+            },
+        }
+    elif name == "student-demo":
+        cfg["enable_http_validation"] = False
+        cfg["enable_dast"] = False
+        cfg["environments"] = {
+            "dev": {
+                "lambda_memory_size": 512,
+                "lambda_timeout": 45,
+                "log_retention_days": 7,
+                "api_throttling_burst_limit": 10,
+                "api_throttling_rate_limit": 20,
+                "cors_allowed_origins": ["*"],
+            },
+            "staging": {
+                "lambda_memory_size": 512,
+                "lambda_timeout": 60,
+                "log_retention_days": 14,
+                "api_throttling_burst_limit": 10,
+                "api_throttling_rate_limit": 20,
+                "cors_allowed_origins": ["*"],
+            },
+            "prod": {
+                "lambda_memory_size": 1024,
+                "lambda_timeout": 90,
+                "log_retention_days": 30,
+                "api_throttling_burst_limit": 20,
+                "api_throttling_rate_limit": 40,
+                "cors_allowed_origins": ["*"],
+            },
+        }
     elif name != "balanced":
         raise ValueError(f"Unknown preset: {name}")
     return cfg
@@ -1048,6 +1128,278 @@ def gh_command(root: Path, args: list[str], timeout: int = 30) -> subprocess.Com
     return run_command(["gh", *args], root, timeout=timeout)
 
 
+def aws_command(root: Path, args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    return run_command(["aws", *args], root, timeout=timeout)
+
+
+def aws_json(root: Path, args: list[str], timeout: int = 30) -> tuple[Any, subprocess.CompletedProcess[str]]:
+    result = aws_command(root, [*args, "--output", "json"], timeout=timeout)
+    if result.returncode != 0:
+        return {}, result
+    try:
+        return json.loads(result.stdout or "{}"), result
+    except json.JSONDecodeError:
+        return {}, result
+
+
+def expected_name_prefix(cfg: dict[str, Any], env_name: str) -> str:
+    return f"{cfg['project_name']}-{env_name}"
+
+
+def expected_ecr_repository_name(cfg: dict[str, Any], env_name: str) -> str:
+    return f"{expected_name_prefix(cfg, env_name)}-lambda-repo"
+
+
+def expected_lambda_function_name(cfg: dict[str, Any], env_name: str) -> str:
+    return f"{expected_name_prefix(cfg, env_name)}-lambda"
+
+
+def expected_lambda_execution_role_name(cfg: dict[str, Any], env_name: str) -> str:
+    return f"{expected_name_prefix(cfg, env_name)}-lambda-exec-role"
+
+
+def expected_api_gateway_name(cfg: dict[str, Any], env_name: str) -> str:
+    return f"{expected_name_prefix(cfg, env_name)}-http-api"
+
+
+def expected_lambda_log_group_name(cfg: dict[str, Any], env_name: str) -> str:
+    return f"/aws/lambda/{expected_lambda_function_name(cfg, env_name)}"
+
+
+def parse_ecr_image_uri(image_uri: str) -> EcrImageRef | None:
+    match = ECR_IMAGE_RE.match(image_uri)
+    if not match:
+        return None
+    return EcrImageRef(
+        registry=match.group("registry"),
+        region=match.group("region"),
+        repository=match.group("repository"),
+        tag=match.group("tag"),
+        digest=match.group("digest"),
+    )
+
+
+def is_resource_missing(result: subprocess.CompletedProcess[str]) -> bool:
+    text = f"{result.stderr}\n{result.stdout}"
+    missing_markers = [
+        "NotFound",
+        "NotFoundException",
+        "ResourceNotFoundException",
+        "RepositoryNotFoundException",
+        "ImageNotFoundException",
+        "NoSuchBucket",
+        "ResourceNotFound",
+    ]
+    return any(marker in text for marker in missing_markers)
+
+
+def missing_or_error_detail(result: subprocess.CompletedProcess[str], missing_detail: str) -> str:
+    return missing_detail if is_resource_missing(result) else compact_error(result)
+
+
+def collect_aws_checks(root: Path, cfg: dict[str, Any], env_name: str = "prod") -> list[Check]:
+    checks: list[Check] = []
+    region = str(cfg["aws_region"])
+    backend = cfg["backend"]
+    backend_region = str(backend["region"])
+    backend_bucket = str(backend["bucket"])
+    lock_table = str(backend["lock_table"])
+
+    ecr_repository = expected_ecr_repository_name(cfg, env_name)
+    lambda_function = expected_lambda_function_name(cfg, env_name)
+    lambda_execution_role = expected_lambda_execution_role_name(cfg, env_name)
+    api_name = expected_api_gateway_name(cfg, env_name)
+    lambda_log_group = expected_lambda_log_group_name(cfg, env_name)
+
+    if not command_exists("aws"):
+        return [
+            Check("AWS CLI", "WARN", "`aws` not found on PATH."),
+            Check("AWS identity", "WARN", "Cannot inspect AWS without AWS CLI."),
+            Check("State bucket", "WARN", "Cannot inspect backend bucket without AWS CLI."),
+            Check("Lock table", "WARN", "Cannot inspect DynamoDB lock table without AWS CLI."),
+            Check("ECR repository", "WARN", "Cannot inspect ECR repository without AWS CLI."),
+            Check("Lambda execution role", "WARN", "Cannot inspect IAM role without AWS CLI."),
+            Check("Lambda function", "WARN", "Cannot inspect Lambda function without AWS CLI."),
+            Check("API Gateway", "WARN", "Cannot inspect API Gateway without AWS CLI."),
+            Check("CloudWatch log group", "WARN", "Cannot inspect log group without AWS CLI."),
+            Check("Configured ECR image", "WARN", "Cannot inspect configured image without AWS CLI."),
+        ]
+
+    checks.append(Check("AWS CLI", "OK", "Installed."))
+
+    identity_payload, identity_result = aws_json(root, ["sts", "get-caller-identity"])
+    if identity_result.returncode != 0:
+        checks.append(Check("AWS identity", "WARN", compact_error(identity_result)))
+        checks.extend(
+            [
+                Check("State bucket", "WARN", "Cannot inspect backend bucket without valid AWS credentials."),
+                Check("Lock table", "WARN", "Cannot inspect DynamoDB lock table without valid AWS credentials."),
+                Check("ECR repository", "WARN", "Cannot inspect ECR repository without valid AWS credentials."),
+                Check("Lambda execution role", "WARN", "Cannot inspect IAM role without valid AWS credentials."),
+                Check("Lambda function", "WARN", "Cannot inspect Lambda function without valid AWS credentials."),
+                Check("API Gateway", "WARN", "Cannot inspect API Gateway without valid AWS credentials."),
+                Check("CloudWatch log group", "WARN", "Cannot inspect log group without valid AWS credentials."),
+                Check("Configured ECR image", "WARN", "Cannot inspect configured image without valid AWS credentials."),
+            ]
+        )
+        return checks
+    identity_detail = str(identity_payload.get("Arn") or identity_payload.get("Account") or "AWS credentials are usable.")
+    checks.append(Check("AWS identity", "OK", identity_detail))
+
+    if not backend_bucket or backend_bucket.startswith("replace-with"):
+        checks.append(Check("State bucket", "WARN", "Set backend.bucket before checking remote state."))
+    else:
+        bucket_result = aws_command(root, ["s3api", "head-bucket", "--bucket", backend_bucket, "--region", backend_region])
+        checks.append(
+            Check(
+                "State bucket",
+                "OK" if bucket_result.returncode == 0 else "WARN",
+                backend_bucket if bucket_result.returncode == 0 else missing_or_error_detail(bucket_result, "Bucket not found or not accessible."),
+            )
+        )
+
+    if not lock_table:
+        checks.append(Check("Lock table", "WARN", "Set backend.lock_table before checking state locking."))
+    else:
+        table_payload, table_result = aws_json(
+            root,
+            ["dynamodb", "describe-table", "--table-name", lock_table, "--region", backend_region],
+        )
+        table_status = ""
+        if isinstance(table_payload, dict):
+            table = table_payload.get("Table", {})
+            if isinstance(table, dict):
+                table_status = str(table.get("TableStatus", ""))
+        checks.append(
+            Check(
+                "Lock table",
+                "OK" if table_result.returncode == 0 else "WARN",
+                f"{lock_table} ({table_status or 'found'})"
+                if table_result.returncode == 0
+                else missing_or_error_detail(table_result, "DynamoDB lock table not found or not accessible."),
+            )
+        )
+
+    _, repo_result = aws_json(
+        root,
+        ["ecr", "describe-repositories", "--repository-names", ecr_repository, "--region", region],
+    )
+    checks.append(
+        Check(
+            "ECR repository",
+            "OK" if repo_result.returncode == 0 else "WARN",
+            ecr_repository if repo_result.returncode == 0 else missing_or_error_detail(repo_result, "ECR repository not deployed yet."),
+        )
+    )
+
+    role_payload, role_result = aws_json(root, ["iam", "get-role", "--role-name", lambda_execution_role])
+    role_arn = ""
+    if isinstance(role_payload, dict):
+        role = role_payload.get("Role", {})
+        if isinstance(role, dict):
+            role_arn = str(role.get("Arn") or "")
+    checks.append(
+        Check(
+            "Lambda execution role",
+            "OK" if role_result.returncode == 0 else "WARN",
+            role_arn
+            if role_result.returncode == 0 and role_arn
+            else lambda_execution_role
+            if role_result.returncode == 0
+            else missing_or_error_detail(role_result, "Lambda execution role not deployed yet."),
+        )
+    )
+
+    lambda_payload, lambda_result = aws_json(
+        root,
+        ["lambda", "get-function-configuration", "--function-name", lambda_function, "--region", region],
+    )
+    lambda_state = ""
+    if isinstance(lambda_payload, dict):
+        lambda_state = str(lambda_payload.get("State") or lambda_payload.get("LastUpdateStatus") or "")
+    checks.append(
+        Check(
+            "Lambda function",
+            "OK" if lambda_result.returncode == 0 else "WARN",
+            f"{lambda_function} ({lambda_state or 'found'})"
+            if lambda_result.returncode == 0
+            else missing_or_error_detail(lambda_result, "Lambda function not deployed yet."),
+        )
+    )
+
+    apis_payload, apis_result = aws_json(root, ["apigatewayv2", "get-apis", "--region", region])
+    api_detail = "API Gateway not deployed yet."
+    api_status = "WARN"
+    if apis_result.returncode == 0 and isinstance(apis_payload, dict):
+        items = apis_payload.get("Items", [])
+        if isinstance(items, list):
+            match = next((item for item in items if isinstance(item, dict) and item.get("Name") == api_name), None)
+            if match:
+                api_status = "OK"
+                api_detail = str(match.get("ApiEndpoint") or api_name)
+    elif apis_result.returncode != 0:
+        api_detail = compact_error(apis_result)
+    checks.append(Check("API Gateway", api_status, api_detail))
+
+    logs_payload, logs_result = aws_json(
+        root,
+        ["logs", "describe-log-groups", "--log-group-name-prefix", lambda_log_group, "--region", region],
+    )
+    log_detail = "Lambda log group not deployed yet."
+    log_status = "WARN"
+    if logs_result.returncode == 0 and isinstance(logs_payload, dict):
+        groups = logs_payload.get("logGroups", [])
+        if isinstance(groups, list):
+            match = next((group for group in groups if isinstance(group, dict) and group.get("logGroupName") == lambda_log_group), None)
+            if match:
+                retention = match.get("retentionInDays")
+                log_status = "OK"
+                log_detail = f"{lambda_log_group} ({retention} day retention)" if retention else lambda_log_group
+    elif logs_result.returncode != 0:
+        log_detail = compact_error(logs_result)
+    checks.append(Check("CloudWatch log group", log_status, log_detail))
+
+    image_uri = str(cfg["lambda_image_uri"])
+    if not image_uri:
+        checks.append(Check("Configured ECR image", "WARN", "Set lambda_image_uri before checking image existence."))
+    else:
+        image_ref = parse_ecr_image_uri(image_uri)
+        if image_ref is None:
+            checks.append(Check("Configured ECR image", "INFO", "Image URI is not an AWS ECR URI; existence check skipped.", scored=False))
+        else:
+            image_id = f"imageTag={image_ref.tag}" if image_ref.tag else f"imageDigest={image_ref.digest}"
+            image_payload, image_result = aws_json(
+                root,
+                [
+                    "ecr",
+                    "describe-images",
+                    "--repository-name",
+                    image_ref.repository,
+                    "--image-ids",
+                    image_id,
+                    "--region",
+                    image_ref.region,
+                ],
+            )
+            image_details = image_payload.get("imageDetails", []) if isinstance(image_payload, dict) else []
+            image_found = image_result.returncode == 0 and bool(image_details)
+            if image_found:
+                image_detail = image_uri
+            elif image_result.returncode == 0:
+                image_detail = "Configured ECR image not found."
+            else:
+                image_detail = missing_or_error_detail(image_result, "Configured ECR image not found.")
+            checks.append(
+                Check(
+                    "Configured ECR image",
+                    "OK" if image_found else "WARN",
+                    image_detail,
+                )
+            )
+
+    return checks
+
+
 def collect_github_checks(root: Path, cfg: dict[str, Any]) -> list[Check]:
     checks: list[Check] = []
     if not command_exists("gh"):
@@ -1386,15 +1738,8 @@ def collect_checks(root: Path, cfg: dict[str, Any], deep: bool = False) -> list[
             )
         )
 
-    if deep and command_exists("aws"):
-        identity = run_command(["aws", "sts", "get-caller-identity", "--output", "text"], root)
-        checks.append(
-            Check(
-                "AWS identity",
-                "OK" if identity.returncode == 0 else "WARN",
-                "AWS credentials are usable." if identity.returncode == 0 else compact_error(identity),
-            )
-        )
+    if deep:
+        checks.extend(collect_aws_checks(root, cfg, env_name="prod"))
 
     return checks
 
@@ -1430,6 +1775,24 @@ def readiness_action_for_check(check: Check) -> str:
         return "Install Terraform and make sure it is available on PATH."
     if check.name == "`aws` CLI":
         return "Install AWS CLI before cloud bootstrap or AWS identity checks."
+    if check.name == "AWS CLI":
+        return "Install AWS CLI and make sure `aws` is available on PATH."
+    if check.name == "State bucket":
+        return "Set `backend.bucket`, run `devsecops render`, then `devsecops bootstrap --apply`."
+    if check.name == "Lock table":
+        return "Set `backend.lock_table`, run `devsecops render`, then `devsecops bootstrap --apply`."
+    if check.name == "ECR repository":
+        return "Run a Terraform plan/apply path that creates the ECR repository before publishing images."
+    if check.name == "Lambda execution role":
+        return "Run a Terraform apply path that creates the Lambda execution role, then re-run `devsecops aws-doctor`."
+    if check.name == "Lambda function":
+        return "Run a manual production deploy after setting an immutable `lambda_image_uri`."
+    if check.name == "API Gateway":
+        return "Run a successful workload deploy, then inspect Terraform output `api_gateway_invoke_url`."
+    if check.name == "CloudWatch log group":
+        return "Deploy the Lambda function; Terraform creates the log group before Lambda creation."
+    if check.name == "Configured ECR image":
+        return "Publish the configured ECR image or update `lambda_image_uri` to an existing immutable image."
     if check.name == "Lambda image URI":
         return "Set an immutable image with `devsecops set lambda_image_uri <image-uri> --render`."
     if check.name == "Backend bucket":
@@ -1563,6 +1926,56 @@ def env_rows(cfg: dict[str, Any]) -> list[list[str]]:
     return rows
 
 
+def preset_rows() -> list[list[str]]:
+    rows: list[list[str]] = []
+    for name in PRESET_ORDER:
+        cfg = preset_config(name)
+        rows.append(
+            [
+                name,
+                "on" if cfg["enable_http_validation"] else "off",
+                "on" if cfg["enable_dast"] else "off",
+                PRESET_DESCRIPTIONS[name],
+            ]
+        )
+    return rows
+
+
+def preset_detail_rows(cfg: dict[str, Any]) -> list[list[str]]:
+    rows: list[list[str]] = [
+        ["HTTP validation", "on" if cfg["enable_http_validation"] else "off"],
+        ["DAST", "on" if cfg["enable_dast"] else "off"],
+    ]
+    for env_name, env_cfg in cfg["environments"].items():
+        rows.extend(
+            [
+                [f"{env_name}.lambda_memory_size", str(env_cfg["lambda_memory_size"])],
+                [f"{env_name}.lambda_timeout", str(env_cfg["lambda_timeout"])],
+                [f"{env_name}.log_retention_days", str(env_cfg["log_retention_days"])],
+                [f"{env_name}.api_throttling_burst_limit", str(env_cfg["api_throttling_burst_limit"])],
+                [f"{env_name}.api_throttling_rate_limit", str(env_cfg["api_throttling_rate_limit"])],
+                [f"{env_name}.cors_allowed_origins", ",".join(env_cfg["cors_allowed_origins"])],
+            ]
+        )
+    return rows
+
+
+def print_preset_list() -> None:
+    draw_table(["Preset", "HTTP", "DAST", "Description"], preset_rows(), title="Policy Presets")
+
+
+def print_preset_detail(name: str) -> int:
+    if name not in PRESETS:
+        print(fail("Unknown preset: ") + name)
+        print("Available presets: " + ", ".join(PRESET_ORDER))
+        return 1
+    cfg = preset_config(name)
+    draw_box(f"Preset: {name}", [PRESET_DESCRIPTIONS[name]])
+    print()
+    draw_table(["Setting", "Value"], preset_detail_rows(cfg))
+    return 0
+
+
 def cmd_envs(args: argparse.Namespace) -> int:
     cfg = load_config(repo_root())
     draw_table(
@@ -1601,7 +2014,7 @@ def architecture_lines() -> list[str]:
         "|-- OIDC -> AWS STS -> deploy role",
         "|-- Terraform validate + Trivy IaC scan",
         "|-- Terraform plan comment on pull requests",
-        "|-- Production apply on push to main",
+        "|-- Manual production apply via workflow_dispatch",
         "AWS",
         "|-- S3 backend + DynamoDB lock",
         "|-- KMS key",
@@ -1665,18 +2078,50 @@ def cmd_set(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_preset(args: argparse.Namespace) -> int:
-    root = repo_root()
+def apply_preset(root: Path, name: str, render: bool = False) -> int:
+    if name not in PRESETS:
+        print(fail("Unknown preset: ") + name)
+        print("Available presets: " + ", ".join(PRESET_ORDER))
+        return 1
     current = load_config(root)
-    cfg = preset_config(args.name)
+    cfg = preset_config(name)
     for key in ["project_name", "aws_region", "lambda_image_uri", "terraform_admin_role_name", "backend"]:
         cfg[key] = current[key]
-    snapshot_before_change(root, "preset", f"Before applying `{args.name}` preset.")
+    snapshot_before_change(root, "preset", f"Before applying `{name}` preset.")
     write_config(root, cfg)
-    print(ok("Applied preset ") + args.name)
-    if args.render:
+    print(ok("Applied preset ") + name)
+    if render:
         return run_render(root, snapshot=False)
     return 0
+
+
+def cmd_preset(args: argparse.Namespace) -> int:
+    command = args.command
+    name = args.name
+    if command is None:
+        print_preset_list()
+        return 0
+    if command == "list":
+        if name:
+            print(fail("`preset list` does not take a preset name."))
+            return 1
+        print_preset_list()
+        return 0
+    if command == "show":
+        if not name:
+            print(fail("Usage: devsecops preset show <name>"))
+            return 1
+        return print_preset_detail(name)
+    if command == "apply":
+        if not name:
+            print(fail("Usage: devsecops preset apply <name> [--render]"))
+            return 1
+        return apply_preset(repo_root(), name, render=args.render)
+    if command in PRESETS and name is None:
+        return apply_preset(repo_root(), command, render=args.render)
+    print(fail("Unknown preset command: ") + command)
+    print("Usage: devsecops preset list | show <name> | apply <name> [--render]")
+    return 1
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -1934,6 +2379,23 @@ def cmd_readiness(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_aws_doctor(args: argparse.Namespace) -> int:
+    root = repo_root()
+    cfg = load_config(root)
+    checks = collect_aws_checks(root, cfg, env_name=args.environment)
+    draw_box(
+        "AWS",
+        [
+            f"Environment: {args.environment}",
+            "Checks AWS identity, Terraform backend, deployed resources, IAM, and configured ECR image.",
+        ],
+    )
+    print_checks(checks)
+    if args.strict and any(check.status != "OK" for check in checks if check.scored):
+        return 1
+    return 0
+
+
 def run_plan(root: Path, env_name: str, no_init: bool = False, create_workspace: bool = False) -> int:
     cfg = load_config(root)
     if env_name not in cfg["environments"]:
@@ -2107,6 +2569,7 @@ def print_main_menu(root: Path) -> None:
     print("[14] Apply preset")
     print("[15] Show config")
     print("[16] Snapshots / Rollback")
+    print("[17] AWS doctor")
     print("[0] Exit")
 
 
@@ -2130,11 +2593,11 @@ def menu_plan_section(root: Path) -> None:
 
 def menu_preset_section() -> None:
     clear_screen()
-    draw_box("Apply Preset", ["Choose minimal, balanced, or strict. Type `b`, `back`, `0`, or `cancel` to return."])
+    draw_box("Apply Preset", [f"Choose one of: {', '.join(PRESET_ORDER)}. Type `b`, `back`, `0`, or `cancel` to return."])
     preset_name = prompt_text("Preset", "balanced")
     if is_cancel_input(preset_name):
         return
-    cmd_preset(argparse.Namespace(name=preset_name, render=False))
+    cmd_preset(argparse.Namespace(command="apply", name=preset_name, render=False))
     pause_for_menu()
 
 
@@ -2266,6 +2729,8 @@ def cmd_menu(args: argparse.Namespace) -> int:
             open_menu_section("Show Config", cmd_config, argparse.Namespace())
         elif choice == "16":
             menu_rollback_section(root)
+        elif choice == "17":
+            open_menu_section("AWS Doctor", cmd_aws_doctor, argparse.Namespace(environment="prod", strict=False))
         elif choice == "0":
             clear_screen()
             return 0
@@ -2305,11 +2770,11 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.set_defaults(func=cmd_init)
 
     doctor_parser = subparsers.add_parser("doctor", help="Check local readiness.")
-    doctor_parser.add_argument("--deep", action="store_true", help="Run Terraform validate and AWS identity checks.")
+    doctor_parser.add_argument("--deep", action="store_true", help="Run Terraform validate and AWS resource checks.")
     doctor_parser.add_argument("--strict", action="store_true", help="Exit non-zero on failed scored checks.")
     doctor_parser.set_defaults(func=cmd_doctor)
 
-    readiness_parser = subparsers.add_parser("readiness", help="Show what blocks 100% readiness.")
+    readiness_parser = subparsers.add_parser("readiness", help="Show what blocks 100%% readiness.")
     readiness_parser.add_argument("--deep", action="store_true", help="Include Terraform/AWS deep checks.")
     readiness_parser.set_defaults(func=cmd_readiness)
 
@@ -2353,6 +2818,11 @@ def build_parser() -> argparse.ArgumentParser:
     gh_doctor_parser.add_argument("--strict", action="store_true", help="Exit non-zero on failed scored checks.")
     gh_doctor_parser.set_defaults(func=cmd_gh_doctor)
 
+    aws_doctor_parser = subparsers.add_parser("aws-doctor", help="Check AWS identity, backend, and deployed resources.")
+    aws_doctor_parser.add_argument("--environment", choices=ENVIRONMENTS, default="prod", help="Environment resources to inspect.")
+    aws_doctor_parser.add_argument("--strict", action="store_true", help="Exit non-zero on WARN or FAIL scored checks.")
+    aws_doctor_parser.set_defaults(func=cmd_aws_doctor)
+
     gh_status_parser = subparsers.add_parser("gh-status", help="Show recent GitHub Actions runs.")
     gh_status_parser.add_argument("--strict", action="store_true", help="Exit non-zero when status cannot be read.")
     gh_status_parser.add_argument("--limit", type=int, default=8, help="Number of workflow runs to inspect.")
@@ -2377,13 +2847,18 @@ def build_parser() -> argparse.ArgumentParser:
     validate_config_parser = subparsers.add_parser("validate-config", help="Validate local config values.")
     validate_config_parser.set_defaults(func=cmd_validate_config)
 
-    preset_parser = subparsers.add_parser("preset", help="Apply an environment configuration preset.")
-    preset_parser.add_argument("name", choices=sorted(PRESETS))
+    preset_parser = subparsers.add_parser("preset", help="List, show, or apply a policy preset.")
+    preset_parser.add_argument(
+        "command",
+        nargs="?",
+        help="Use `list`, `show`, `apply`, or a preset name for backward-compatible apply.",
+    )
+    preset_parser.add_argument("name", nargs="?", help="Preset name for `show` or `apply`.")
     preset_parser.add_argument("--render", action="store_true", help="Render artifacts after applying preset.")
     preset_parser.set_defaults(func=cmd_preset)
 
     plan_parser = subparsers.add_parser("plan", help="Run Terraform plan for an environment.")
-    plan_parser.add_argument("environment", choices=["dev", "staging", "prod"])
+    plan_parser.add_argument("environment", choices=ENVIRONMENTS)
     plan_parser.add_argument("--no-init", action="store_true", help="Skip Terraform init.")
     plan_parser.add_argument("--create-workspace", action="store_true", help="Create the workspace if it is missing.")
     plan_parser.set_defaults(func=cmd_plan)

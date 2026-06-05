@@ -19,9 +19,11 @@ Inspect and tune the active CLI configuration first:
 
 ```bash
 devsecops envs
-devsecops preset minimal --render
-devsecops preset balanced --render
-devsecops preset strict --render
+devsecops preset list
+devsecops preset apply student-demo --render
+devsecops preset apply minimal --render
+devsecops preset apply balanced --render
+devsecops preset apply enterprise --render
 devsecops set environments.prod.lambda_memory_size 2048 --render
 devsecops set environments.prod.log_retention_days 90 --render
 ```
@@ -70,7 +72,8 @@ Terraform configuration.
 Use CLI presets and targeted config edits before rendering:
 
 ```bash
-devsecops preset minimal --render
+devsecops preset apply minimal --render
+devsecops preset apply student-demo --render
 devsecops set environments.dev.log_retention_days 7 --render
 devsecops set environments.staging.log_retention_days 30 --render
 devsecops set environments.prod.api_throttling_rate_limit 100 --render

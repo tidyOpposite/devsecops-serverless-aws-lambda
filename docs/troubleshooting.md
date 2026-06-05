@@ -178,6 +178,52 @@ devsecops actions-status
 `actions-status` uses `gh run list` and, for failed runs, `gh run view` to show
 failed job names.
 
+## AWS Diagnostics
+
+### Check AWS account and deployed resources
+
+Run:
+
+```bash
+devsecops aws-doctor --environment prod
+```
+
+AWS Doctor checks:
+
+* AWS CLI installation and `sts get-caller-identity`;
+* Terraform backend S3 bucket;
+* DynamoDB lock table;
+* ECR repository for the selected environment;
+* Lambda execution IAM role;
+* Lambda function;
+* API Gateway HTTP API;
+* Lambda CloudWatch log group;
+* configured `lambda_image_uri` existence when it points to ECR.
+
+Before the first deploy, ECR, Lambda execution role, Lambda, API Gateway, and
+log group checks can return `WARN not deployed yet`. That is expected. Fix
+identity/backend warnings first, then run the manual deploy flow.
+
+Use `--strict` when AWS Doctor runs in automation and any scored warning should
+fail the command:
+
+```bash
+devsecops aws-doctor --environment prod --strict
+```
+
+### AWS Doctor cannot inspect resources
+
+Install and configure AWS CLI:
+
+```bash
+aws sts get-caller-identity
+devsecops aws-doctor --environment prod
+```
+
+If identity works but resource checks fail, confirm `aws_region`,
+`backend.region`, and the selected `--environment` match the account where the
+pipeline was deployed.
+
 ## GitHub OIDC
 
 ### `Not authorized to perform sts:AssumeRoleWithWebIdentity`

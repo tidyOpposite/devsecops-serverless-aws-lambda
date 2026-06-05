@@ -1,7 +1,9 @@
+import argparse
 import tempfile
 import unittest
 import json
 import io
+import subprocess
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -87,6 +89,57 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertTrue(cfg["enable_http_validation"])
         self.assertTrue(cfg["enable_dast"])
         self.assertEqual(cfg["environments"]["prod"]["lambda_timeout"], 300)
+
+    def test_preset_profiles_are_valid_and_include_phase_five_profiles(self) -> None:
+        self.assertIn("enterprise", cli.PRESET_ORDER)
+        self.assertIn("student-demo", cli.PRESET_ORDER)
+
+        for preset_name in cli.PRESET_ORDER:
+            cfg = cli.preset_config(preset_name)
+            failures = [check for check in cli.validate_config(cfg) if check.status == "FAIL"]
+            self.assertEqual(failures, [], preset_name)
+
+        enterprise = cli.preset_config("enterprise")
+        self.assertTrue(enterprise["enable_http_validation"])
+        self.assertTrue(enterprise["enable_dast"])
+        self.assertEqual(enterprise["environments"]["prod"]["log_retention_days"], 1095)
+        self.assertNotIn("*", enterprise["environments"]["prod"]["cors_allowed_origins"])
+
+        demo = cli.preset_config("student-demo")
+        self.assertFalse(demo["enable_http_validation"])
+        self.assertFalse(demo["enable_dast"])
+        self.assertEqual(demo["environments"]["dev"]["lambda_memory_size"], 512)
+
+    def test_preset_list_show_apply_and_legacy_apply(self) -> None:
+        list_output = io.StringIO()
+        with redirect_stdout(list_output):
+            self.assertEqual(cli.cmd_preset(argparse.Namespace(command="list", name=None, render=False)), 0)
+        self.assertIn("enterprise", list_output.getvalue())
+        self.assertIn("student-demo", list_output.getvalue())
+
+        show_output = io.StringIO()
+        with redirect_stdout(show_output):
+            self.assertEqual(cli.cmd_preset(argparse.Namespace(command="show", name="strict", render=False)), 0)
+        self.assertIn("Preset: strict", show_output.getvalue())
+        self.assertIn("prod.lambda_timeout", show_output.getvalue())
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = cli.default_config()
+            cfg["project_name"] = "kept-project"
+            cli.write_config(root, cfg)
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "run_render", return_value=0) as run_render:
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.cmd_preset(argparse.Namespace(command="apply", name="enterprise", render=True)), 0)
+                applied = cli.load_config(root)
+                self.assertEqual(applied["project_name"], "kept-project")
+                self.assertEqual(applied["environments"]["prod"]["log_retention_days"], 1095)
+                run_render.assert_called_once()
+
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.cmd_preset(argparse.Namespace(command="student-demo", name=None, render=False)), 0)
+                legacy_applied = cli.load_config(root)
+                self.assertEqual(legacy_applied["environments"]["prod"]["log_retention_days"], 30)
 
     def test_github_setup_script_contains_expected_commands(self) -> None:
         cfg = cli.default_config()
@@ -183,6 +236,106 @@ class DevSecOpsCliTests(unittest.TestCase):
             ),
         )
         self.assertEqual(failed, [["Deploy", "Apply", "completed", "failure"]])
+
+    def test_parse_ecr_image_uri_tag_and_digest(self) -> None:
+        tagged = cli.parse_ecr_image_uri("123456789012.dkr.ecr.us-east-1.amazonaws.com/app/service:sha-abc123")
+        self.assertIsNotNone(tagged)
+        self.assertEqual(tagged.region, "us-east-1")
+        self.assertEqual(tagged.repository, "app/service")
+        self.assertEqual(tagged.tag, "sha-abc123")
+
+        digest = "sha256:" + "a" * 64
+        digested = cli.parse_ecr_image_uri(f"123456789012.dkr.ecr.eu-central-1.amazonaws.com/app@{digest}")
+        self.assertIsNotNone(digested)
+        self.assertEqual(digested.digest, digest)
+        self.assertIsNone(cli.parse_ecr_image_uri("repo.example/app:sha-abc123"))
+
+    def test_collect_aws_checks_warns_when_aws_cli_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(cli, "command_exists", return_value=False):
+                checks = cli.collect_aws_checks(Path(tmpdir), cli.default_config(), env_name="prod")
+
+        self.assertEqual(checks[0].name, "AWS CLI")
+        self.assertEqual(checks[0].status, "WARN")
+        self.assertTrue(any(check.name == "Lambda function" and check.status == "WARN" for check in checks))
+
+    def test_collect_aws_checks_successful_resources(self) -> None:
+        cfg = cli.default_config()
+        cfg["backend"]["bucket"] = "state-bucket"
+        cfg["lambda_image_uri"] = "123456789012.dkr.ecr.us-east-1.amazonaws.com/devsecops-pipeline-prod-lambda-repo:sha-abc123"
+
+        def completed(command: list[str], stdout: str = "{}") -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        def fake_run_command(command: list[str], root: Path, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+            command_text = " ".join(command)
+            if "sts get-caller-identity" in command_text:
+                return completed(command, json.dumps({"Arn": "arn:aws:iam::123456789012:user/test", "Account": "123456789012"}))
+            if "s3api head-bucket" in command_text:
+                return completed(command)
+            if "dynamodb describe-table" in command_text:
+                return completed(command, json.dumps({"Table": {"TableStatus": "ACTIVE"}}))
+            if "ecr describe-repositories" in command_text:
+                return completed(command, json.dumps({"repositories": [{"repositoryName": "devsecops-pipeline-prod-lambda-repo"}]}))
+            if "iam get-role" in command_text:
+                return completed(command, json.dumps({"Role": {"Arn": "arn:aws:iam::123456789012:role/devsecops-pipeline-prod-lambda-exec-role"}}))
+            if "lambda get-function-configuration" in command_text:
+                return completed(command, json.dumps({"FunctionName": "devsecops-pipeline-prod-lambda", "State": "Active"}))
+            if "apigatewayv2 get-apis" in command_text:
+                return completed(
+                    command,
+                    json.dumps({"Items": [{"Name": "devsecops-pipeline-prod-http-api", "ApiEndpoint": "https://api.example"}]}),
+                )
+            if "logs describe-log-groups" in command_text:
+                return completed(
+                    command,
+                    json.dumps({"logGroups": [{"logGroupName": "/aws/lambda/devsecops-pipeline-prod-lambda", "retentionInDays": 365}]}),
+                )
+            if "ecr describe-images" in command_text:
+                return completed(command, json.dumps({"imageDetails": [{"imageTags": ["sha-abc123"]}]}))
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="unexpected command")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(cli, "command_exists", return_value=True), patch.object(cli, "run_command", side_effect=fake_run_command):
+                checks = cli.collect_aws_checks(Path(tmpdir), cfg, env_name="prod")
+
+        by_name = {check.name: check for check in checks}
+        self.assertEqual(by_name["AWS identity"].status, "OK")
+        self.assertEqual(by_name["State bucket"].status, "OK")
+        self.assertEqual(by_name["Lock table"].status, "OK")
+        self.assertEqual(by_name["ECR repository"].status, "OK")
+        self.assertEqual(by_name["Lambda execution role"].status, "OK")
+        self.assertEqual(by_name["Lambda function"].status, "OK")
+        self.assertEqual(by_name["API Gateway"].status, "OK")
+        self.assertEqual(by_name["CloudWatch log group"].status, "OK")
+        self.assertEqual(by_name["Configured ECR image"].status, "OK")
+
+    def test_collect_checks_deep_includes_aws_resource_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            aws_checks = [cli.Check("Lambda execution role", "OK", "deployed")]
+            with patch.object(cli, "command_exists", return_value=False), patch.object(
+                cli,
+                "collect_aws_checks",
+                return_value=aws_checks,
+            ) as collect_aws:
+                checks = cli.collect_checks(root, cli.default_config(), deep=True)
+
+        self.assertIn(aws_checks[0], checks)
+        collect_aws.assert_called_once()
+
+    def test_aws_doctor_strict_fails_on_scored_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "load_config", return_value=cli.default_config()), patch.object(
+                cli,
+                "collect_aws_checks",
+                return_value=[cli.Check("AWS CLI", "WARN", "`aws` not found on PATH.")],
+            ):
+                with redirect_stdout(io.StringIO()):
+                    result = cli.cmd_aws_doctor(argparse.Namespace(environment="prod", strict=True))
+
+        self.assertEqual(result, 1)
 
     def test_snapshots_are_listed_newest_first_and_selectable_by_number(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -286,6 +439,7 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("[1] Dashboard", output)
         self.assertIn("[i] details", output)
         self.assertIn("[16] Snapshots / Rollback", output)
+        self.assertIn("[17] AWS doctor", output)
         self.assertIn("[0] Exit", output)
 
 

@@ -53,6 +53,7 @@ flowchart LR
 | CLI product | Dependency-free terminal menu, setup wizard, readiness dashboard, config presets, reports, snapshots, rollback, and diagnostics. |
 | CLI-managed config | `.devsecops-pipeline.toml` stores local settings and `devsecops render` generates ignored Terraform/GitHub helper artifacts. |
 | Readiness diagnostics | `devsecops readiness`, `[i] details`, `doctor`, `gh-doctor`, `actions-status`, and `branch-doctor` explain what blocks a deploy-ready pipeline. |
+| AWS diagnostics | `devsecops aws-doctor` checks AWS identity, backend bucket, lock table, ECR, Lambda execution role, Lambda, API Gateway, CloudWatch logs, and configured ECR image existence. |
 | Environments | `dev`, `staging`, and `prod` are mapped to Terraform workspaces. Resource names include the environment, for example `devsecops-pipeline-prod-lambda`. |
 | Terraform state | Remote S3 backend with DynamoDB locking. `terraform/bootstrap` creates both prerequisites. |
 | IaC structure | Root Terraform composes modules in `terraform/modules`: `kms`, `storage`, `ecr`, `lambda`, and `api-gateway`. |
@@ -118,10 +119,12 @@ Useful commands:
 ```bash
 devsecops dashboard     # one-screen terminal dashboard
 devsecops init          # interactive setup wizard
-devsecops preset strict # apply minimal/balanced/strict config profile
+devsecops preset list   # show available policy profiles
+devsecops preset show strict
+devsecops preset apply strict --render
 devsecops doctor        # readiness report
 devsecops readiness     # shows what blocks 100% readiness
-devsecops doctor --deep # includes Terraform validate and AWS identity checks
+devsecops doctor --deep # includes Terraform validate and AWS resource checks
 devsecops envs          # environment settings table
 devsecops controls      # security controls matrix
 devsecops render        # writes ignored Terraform/GitHub helper artifacts
@@ -131,6 +134,7 @@ devsecops rollback --last --dry-run # previews rollback to the newest snapshot
 devsecops github-setup  # prints gh commands for repo variables/secrets
 devsecops gh-setup --apply --deploy-role-arn arn:aws:iam::123456789012:role/deploy
 devsecops gh-doctor     # checks GitHub variables/secrets through gh
+devsecops aws-doctor    # checks AWS identity, backend, and deployed resources
 devsecops gh-status     # shows recent GitHub Actions runs
 devsecops actions-status # shows recent runs and failed jobs
 devsecops branch-doctor # checks main branch protection
@@ -182,10 +186,17 @@ devsecops validate-config
 Presets provide a quick starting point:
 
 ```bash
-devsecops preset minimal --render   # low-cost local/dev experimentation
-devsecops preset balanced --render  # default reference settings
-devsecops preset strict --render    # enables health validation and DAST
+devsecops preset list
+devsecops preset show enterprise
+devsecops preset apply minimal --render       # low-cost local/dev experimentation
+devsecops preset apply balanced --render      # default reference settings
+devsecops preset apply strict --render        # enables health validation and DAST
+devsecops preset apply enterprise --render    # locked-down CORS and longer retention
+devsecops preset apply student-demo --render  # simple demonstration profile
 ```
+
+For compatibility, `devsecops preset strict --render` still applies the named
+preset, but new scripts should use `devsecops preset apply <name>`.
 
 ## CLI-Managed Backend Bootstrap
 
@@ -226,7 +237,7 @@ Use the CLI for the normal environment workflow:
 
 ```bash
 devsecops envs
-devsecops preset balanced --render
+devsecops preset apply balanced --render
 devsecops plan dev --create-workspace
 devsecops plan staging --create-workspace
 devsecops plan prod --create-workspace
@@ -248,6 +259,7 @@ devsecops gh-setup --apply \
   --plan-role-arn arn:aws:iam::<account-id>:role/<plan-role>
 devsecops gh-doctor
 devsecops branch-doctor
+devsecops aws-doctor --environment prod
 ```
 
 Required repository secrets:

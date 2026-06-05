@@ -25,7 +25,8 @@ Use the CLI to inspect and configure scanning posture:
 ```bash
 devsecops controls
 devsecops explain dast
-devsecops preset strict --render
+devsecops preset show strict
+devsecops preset apply strict --render
 devsecops set enable_dast true --render
 devsecops gh-doctor
 ```
@@ -33,6 +34,8 @@ devsecops gh-doctor
 `minimal` and `balanced` keep HTTP validation and DAST conservative by default.
 `strict` enables validation controls and is intended for workloads that already
 implement `/health` and can tolerate passive dynamic scanning.
+`enterprise` also enables those gates while using locked-down CORS and longer
+log retention. `student-demo` keeps scanning gates off for short demonstrations.
 
 ## Source SAST And SCA
 

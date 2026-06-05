@@ -32,9 +32,14 @@ semantic versioning.
   architecture view, non-interactive `set` command, and unit tests.
 * CLI readiness report export, GitHub setup script generation, environment
   presets, and optional Terraform workspace creation for plans.
+* Policy preset profiles now support `preset list`, `preset show <name>`, and
+  `preset apply <name>`, with new `enterprise` and `student-demo` profiles.
 * GitHub CLI integration with `gh-doctor`, `gh-status`, and safe
   `github-setup --apply` support for repository variables and provided
   secrets.
+* AWS Doctor CLI command for identity, backend, ECR, Lambda execution role,
+  Lambda, API Gateway, CloudWatch log group, and configured ECR image
+  diagnostics, with strict mode for automation.
 * Branch protection and GitHub Actions diagnostics with `branch-doctor` and
   `actions-status`, including required check validation and failed job
   summaries.
