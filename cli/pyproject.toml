@@ -1,12 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "devsecops-pipeline-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "Interactive CLI for configuring the DevSecOps Lambda pipeline template."
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = []
 
 [project.scripts]
-devsecops = "devsecops_cli:main"
+devsecops = "devsecops_cli.main:main"
 
-[tool.setuptools]
-py-modules = ["devsecops_cli"]
+[project.optional-dependencies]
+tui = [
+  "rich>=13.7",
+  "textual>=0.79",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["devsecops_cli*"]

@@ -51,9 +51,9 @@ mind:
 Run the focused CLI checks before opening a pull request:
 
 ```bash
-python3 -m py_compile cli/devsecops_cli.py cli/tests/test_devsecops_cli.py
+python3 -m py_compile cli/devsecops_cli/*.py cli/tests/test_devsecops_cli.py
 PYTHONPATH=cli python3 -m unittest discover -s cli/tests -v
-python3 cli/devsecops_cli.py readiness
+PYTHONPATH=cli python3 -m devsecops_cli readiness
 ```
 
 For infrastructure changes, also run the relevant Terraform and workflow

@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "devsecops-pipeline-cli"
+version = "0.2.0"
+description = "Interactive CLI for configuring the DevSecOps Lambda pipeline template."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "DevSecOps Pipeline Kit maintainers" }
+]
+dependencies = []
+keywords = ["devsecops", "aws", "lambda", "terraform", "github-actions"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Security",
+  "Topic :: Software Development :: Build Tools",
+]
+
+[project.scripts]
+devsecops = "devsecops_cli.main:main"
+
+[project.optional-dependencies]
+tui = [
+  "rich>=13.7",
+  "textual>=0.79",
+]
+
+[tool.setuptools]
+package-dir = { "" = "cli" }
+
+[tool.setuptools.packages.find]
+where = ["cli"]
+include = ["devsecops_cli*"]

@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback guard
     tomllib = None  # type: ignore[assignment]
 
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 CONFIG_FILE = ".devsecops-pipeline.toml"
 DIST_DIR = Path("dist/devsecops")
 GENERATED_TFVARS = Path("terraform/generated.auto.tfvars")
@@ -58,8 +59,11 @@ CONFIG_SET_PATHS = {
     "project_name",
     "aws_region",
     "lambda_image_uri",
+    "enable_snyk_scan",
     "enable_http_validation",
     "enable_dast",
+    "use_prod_approval_environment",
+    "use_separate_aws_plan_role",
     "terraform_admin_role_name",
     "backend.bucket",
     "backend.key",
@@ -80,16 +84,26 @@ for _env_name in ENVIRONMENTS:
 REQUIRED_GH_VARIABLES = [
     "PROJECT_NAME",
     "LAMBDA_IMAGE_URI",
+    "ENABLE_SNYK_SCAN",
     "ENABLE_HTTP_VALIDATION",
     "ENABLE_DAST",
+    "PROD_APPROVAL_ENVIRONMENT",
 ]
-REQUIRED_GH_SECRETS = [
+BASE_REQUIRED_GH_SECRETS = [
     "AWS_ROLE_TO_ASSUME_ARN",
-    "AWS_PLAN_ROLE_TO_ASSUME_ARN",
     "AWS_REGION",
 ]
-OPTIONAL_GH_SECRETS = ["SNYK_TOKEN"]
+PLAN_ROLE_SECRET = "AWS_PLAN_ROLE_TO_ASSUME_ARN"
+SNYK_TOKEN_SECRET = "SNYK_TOKEN"
+PROD_APPROVAL_ENVIRONMENT = "prod"
+NO_APPROVAL_ENVIRONMENT = "devsecops-no-approval"
+STRICT_CORS_ORIGINS = {
+    "dev": ["https://dev.example.com"],
+    "staging": ["https://staging.example.com"],
+    "prod": ["https://app.example.com"],
+}
 DEFAULT_BRANCH = "main"
+READINESS_CATEGORIES = ["Local", "Terraform", "GitHub", "AWS", "Security", "Deployment"]
 REQUIRED_BRANCH_CHECKS = [
     "Security and Terraform Validate",
     "Terraform Plan",
@@ -165,8 +179,11 @@ def default_config() -> dict[str, Any]:
         "project_name": "devsecops-pipeline",
         "aws_region": "us-east-1",
         "lambda_image_uri": "",
+        "enable_snyk_scan": False,
         "enable_http_validation": False,
         "enable_dast": False,
+        "use_prod_approval_environment": True,
+        "use_separate_aws_plan_role": True,
         "terraform_admin_role_name": "",
         "backend": {
             "bucket": "replace-with-your-terraform-state-bucket",
@@ -236,17 +253,19 @@ def preset_config(name: str) -> dict[str, Any]:
             },
         }
     elif name == "strict":
+        cfg["enable_snyk_scan"] = True
         cfg["enable_http_validation"] = True
         cfg["enable_dast"] = True
-        cfg["environments"]["dev"]["cors_allowed_origins"] = ["https://dev.example.com"]
-        cfg["environments"]["staging"]["cors_allowed_origins"] = ["https://staging.example.com"]
+        apply_cors_policy(cfg, strict=True)
         cfg["environments"]["prod"]["lambda_timeout"] = 300
         cfg["environments"]["prod"]["api_throttling_burst_limit"] = 50
         cfg["environments"]["prod"]["api_throttling_rate_limit"] = 100
-        cfg["environments"]["prod"]["cors_allowed_origins"] = ["https://app.example.com"]
     elif name == "enterprise":
+        cfg["enable_snyk_scan"] = True
         cfg["enable_http_validation"] = True
         cfg["enable_dast"] = True
+        cfg["use_prod_approval_environment"] = True
+        cfg["use_separate_aws_plan_role"] = True
         cfg["environments"] = {
             "dev": {
                 "lambda_memory_size": 1536,
@@ -274,8 +293,11 @@ def preset_config(name: str) -> dict[str, Any]:
             },
         }
     elif name == "student-demo":
+        cfg["enable_snyk_scan"] = False
         cfg["enable_http_validation"] = False
         cfg["enable_dast"] = False
+        cfg["use_prod_approval_environment"] = False
+        cfg["use_separate_aws_plan_role"] = False
         cfg["environments"] = {
             "dev": {
                 "lambda_memory_size": 512,
@@ -304,6 +326,30 @@ def preset_config(name: str) -> dict[str, Any]:
         }
     elif name != "balanced":
         raise ValueError(f"Unknown preset: {name}")
+    return cfg
+
+
+def prod_approval_environment(cfg: dict[str, Any]) -> str:
+    return PROD_APPROVAL_ENVIRONMENT if cfg["use_prod_approval_environment"] else NO_APPROVAL_ENVIRONMENT
+
+
+def apply_cors_policy(cfg: dict[str, Any], strict: bool) -> None:
+    for env_name, env_cfg in cfg["environments"].items():
+        env_cfg["cors_allowed_origins"] = list(STRICT_CORS_ORIGINS[env_name]) if strict else ["*"]
+
+
+def uses_strict_cors(cfg: dict[str, Any]) -> bool:
+    return all(cfg["environments"][env_name]["cors_allowed_origins"] == STRICT_CORS_ORIGINS[env_name] for env_name in ENVIRONMENTS)
+
+
+def compose_config(current: dict[str, Any], answers: dict[str, bool]) -> dict[str, Any]:
+    cfg = deep_merge(default_config(), current)
+    cfg["enable_snyk_scan"] = bool(answers["enable_snyk_scan"])
+    cfg["enable_dast"] = bool(answers["enable_dast"])
+    cfg["enable_http_validation"] = bool(answers["enable_http_validation"])
+    cfg["use_prod_approval_environment"] = bool(answers["use_prod_approval_environment"])
+    cfg["use_separate_aws_plan_role"] = bool(answers["use_separate_aws_plan_role"])
+    apply_cors_policy(cfg, strict=bool(answers["use_strict_cors"]))
     return cfg
 
 
@@ -342,15 +388,18 @@ def toml_value(value: Any) -> str:
 def dump_config_toml(cfg: dict[str, Any]) -> str:
     lines = [
         "# DevSecOps Pipeline Kit local configuration",
-        "# Generated by: python cli/devsecops_cli.py init",
+        "# Generated by: devsecops init",
         "",
     ]
     for key in [
         "project_name",
         "aws_region",
         "lambda_image_uri",
+        "enable_snyk_scan",
         "enable_http_validation",
         "enable_dast",
+        "use_prod_approval_environment",
+        "use_separate_aws_plan_role",
         "terraform_admin_role_name",
     ]:
         lines.append(f"{key} = {toml_value(cfg[key])}")
@@ -682,13 +731,17 @@ def github_variables(cfg: dict[str, Any]) -> str:
 
         PROJECT_NAME={cfg["project_name"]}
         LAMBDA_IMAGE_URI={cfg["lambda_image_uri"]}
+        ENABLE_SNYK_SCAN={str(cfg["enable_snyk_scan"]).lower()}
         ENABLE_HTTP_VALIDATION={str(cfg["enable_http_validation"]).lower()}
         ENABLE_DAST={str(cfg["enable_dast"]).lower()}
+        PROD_APPROVAL_ENVIRONMENT={prod_approval_environment(cfg)}
         """
     )
 
 
 def checklist(cfg: dict[str, Any]) -> str:
+    plan_role_label = "`AWS_PLAN_ROLE_TO_ASSUME_ARN`" if cfg["use_separate_aws_plan_role"] else "`AWS_PLAN_ROLE_TO_ASSUME_ARN` (optional, deploy role fallback)"
+    snyk_label = "`SNYK_TOKEN`" if cfg["enable_snyk_scan"] else "`SNYK_TOKEN` (optional)"
     return textwrap.dedent(
         f"""\
         # DevSecOps Pipeline Setup Checklist
@@ -696,16 +749,18 @@ def checklist(cfg: dict[str, Any]) -> str:
         ## GitHub Secrets
 
         - [ ] `AWS_ROLE_TO_ASSUME_ARN`
-        - [ ] `AWS_PLAN_ROLE_TO_ASSUME_ARN` (optional, recommended)
+        - [ ] {plan_role_label}
         - [ ] `AWS_REGION` = `{cfg["aws_region"]}`
-        - [ ] `SNYK_TOKEN` (optional)
+        - [ ] {snyk_label}
 
         ## GitHub Variables
 
         - [ ] `PROJECT_NAME` = `{cfg["project_name"]}`
         - [ ] `LAMBDA_IMAGE_URI` = `{cfg["lambda_image_uri"] or "<immutable-image-uri>"}`
+        - [ ] `ENABLE_SNYK_SCAN` = `{str(cfg["enable_snyk_scan"]).lower()}`
         - [ ] `ENABLE_HTTP_VALIDATION` = `{str(cfg["enable_http_validation"]).lower()}`
         - [ ] `ENABLE_DAST` = `{str(cfg["enable_dast"]).lower()}`
+        - [ ] `PROD_APPROVAL_ENVIRONMENT` = `{prod_approval_environment(cfg)}`
 
         ## Terraform Backend
 
@@ -723,6 +778,16 @@ def checklist(cfg: dict[str, Any]) -> str:
 
 
 def github_setup_script(cfg: dict[str, Any]) -> str:
+    plan_role_command = (
+        'gh secret set AWS_PLAN_ROLE_TO_ASSUME_ARN --body "<plan-role-arn>"'
+        if cfg["use_separate_aws_plan_role"]
+        else '# Optional: gh secret set AWS_PLAN_ROLE_TO_ASSUME_ARN --body "<plan-role-arn>"'
+    )
+    snyk_token_command = (
+        'gh secret set SNYK_TOKEN --body "<snyk-token>"'
+        if cfg["enable_snyk_scan"]
+        else '# Optional: gh secret set SNYK_TOKEN --body "<snyk-token>"'
+    )
     return textwrap.dedent(
         f"""\
         #!/usr/bin/env bash
@@ -733,14 +798,15 @@ def github_setup_script(cfg: dict[str, Any]) -> str:
 
         gh variable set PROJECT_NAME --body {shell_quote(cfg["project_name"])}
         gh variable set LAMBDA_IMAGE_URI --body {shell_quote(cfg["lambda_image_uri"] or "<immutable-image-uri>")}
+        gh variable set ENABLE_SNYK_SCAN --body {shell_quote(str(cfg["enable_snyk_scan"]).lower())}
         gh variable set ENABLE_HTTP_VALIDATION --body {shell_quote(str(cfg["enable_http_validation"]).lower())}
         gh variable set ENABLE_DAST --body {shell_quote(str(cfg["enable_dast"]).lower())}
+        gh variable set PROD_APPROVAL_ENVIRONMENT --body {shell_quote(prod_approval_environment(cfg))}
 
         gh secret set AWS_REGION --body {shell_quote(cfg["aws_region"])}
         gh secret set AWS_ROLE_TO_ASSUME_ARN --body "<deploy-role-arn>"
-        gh secret set AWS_PLAN_ROLE_TO_ASSUME_ARN --body "<plan-role-arn>"
-        # Optional:
-        # gh secret set SNYK_TOKEN --body "<snyk-token>"
+        {plan_role_command}
+        {snyk_token_command}
         """
     )
 
@@ -753,9 +819,29 @@ def github_expected_variables(cfg: dict[str, Any]) -> dict[str, str]:
     return {
         "PROJECT_NAME": str(cfg["project_name"]),
         "LAMBDA_IMAGE_URI": str(cfg["lambda_image_uri"]),
+        "ENABLE_SNYK_SCAN": str(cfg["enable_snyk_scan"]).lower(),
         "ENABLE_HTTP_VALIDATION": str(cfg["enable_http_validation"]).lower(),
         "ENABLE_DAST": str(cfg["enable_dast"]).lower(),
+        "PROD_APPROVAL_ENVIRONMENT": prod_approval_environment(cfg),
     }
+
+
+def required_github_secrets(cfg: dict[str, Any]) -> list[str]:
+    required = list(BASE_REQUIRED_GH_SECRETS)
+    if cfg["use_separate_aws_plan_role"]:
+        required.append(PLAN_ROLE_SECRET)
+    if cfg["enable_snyk_scan"]:
+        required.append(SNYK_TOKEN_SECRET)
+    return required
+
+
+def optional_github_secrets(cfg: dict[str, Any]) -> list[str]:
+    optional: list[str] = []
+    if not cfg["use_separate_aws_plan_role"]:
+        optional.append(PLAN_ROLE_SECRET)
+    if not cfg["enable_snyk_scan"]:
+        optional.append(SNYK_TOKEN_SECRET)
+    return optional
 
 
 def parse_gh_items(stdout: str, value_key: str | None = None) -> dict[str, str]:
@@ -810,9 +896,9 @@ def github_variable_checks(cfg: dict[str, Any], variables: dict[str, str]) -> li
     return checks
 
 
-def github_secret_checks(secrets: dict[str, str]) -> list[Check]:
+def github_secret_checks(cfg: dict[str, Any], secrets: dict[str, str]) -> list[Check]:
     checks: list[Check] = []
-    for name in REQUIRED_GH_SECRETS:
+    for name in required_github_secrets(cfg):
         checks.append(
             Check(
                 f"GitHub secret {name}",
@@ -820,7 +906,7 @@ def github_secret_checks(secrets: dict[str, str]) -> list[Check]:
                 "Configured." if name in secrets else "Missing.",
             )
         )
-    for name in OPTIONAL_GH_SECRETS:
+    for name in optional_github_secrets(cfg):
         checks.append(
             Check(
                 f"GitHub secret {name}",
@@ -1078,6 +1164,20 @@ def validate_config(cfg: dict[str, Any]) -> list[Check]:
             cfg["aws_region"],
         )
     )
+    for key in [
+        "enable_snyk_scan",
+        "enable_http_validation",
+        "enable_dast",
+        "use_prod_approval_environment",
+        "use_separate_aws_plan_role",
+    ]:
+        checks.append(
+            Check(
+                f"Config {key}",
+                "OK" if isinstance(cfg.get(key), bool) else "FAIL",
+                str(cfg.get(key)) if isinstance(cfg.get(key), bool) else "Expected boolean.",
+            )
+        )
     for env_name, env_cfg in cfg["environments"].items():
         numeric_rules = {
             "lambda_memory_size": (128, 10240),
@@ -1433,7 +1533,7 @@ def collect_github_checks(root: Path, cfg: dict[str, Any]) -> list[Check]:
     if secrets_result.returncode != 0:
         checks.append(Check("GitHub secrets", "WARN", compact_error(secrets_result)))
     else:
-        checks.extend(github_secret_checks(parse_gh_items(secrets_result.stdout)))
+        checks.extend(github_secret_checks(cfg, parse_gh_items(secrets_result.stdout)))
 
     return checks
 
@@ -1573,10 +1673,12 @@ def apply_github_setup(root: Path, cfg: dict[str, Any], args: argparse.Namespace
         print(warn("Skipping AWS_ROLE_TO_ASSUME_ARN; pass --deploy-role-arn to set it."))
     if args.plan_role_arn:
         secrets["AWS_PLAN_ROLE_TO_ASSUME_ARN"] = args.plan_role_arn
-    else:
+    elif cfg["use_separate_aws_plan_role"]:
         print(warn("Skipping AWS_PLAN_ROLE_TO_ASSUME_ARN; pass --plan-role-arn to set it."))
     if args.snyk_token:
         secrets["SNYK_TOKEN"] = args.snyk_token
+    elif cfg["enable_snyk_scan"]:
+        print(warn("Skipping SNYK_TOKEN; pass --snyk-token because enable_snyk_scan is true."))
 
     for name, value in secrets.items():
         command = ["secret", "set", name, "--body", value]
@@ -1690,9 +1792,35 @@ def collect_checks(root: Path, cfg: dict[str, Any], deep: bool = False) -> list[
 
     checks.append(
         Check(
+            "Snyk container scan",
+            "OK" if cfg["enable_snyk_scan"] else "INFO",
+            "Enabled; requires SNYK_TOKEN." if cfg["enable_snyk_scan"] else "Disabled by config.",
+            scored=False,
+        )
+    )
+    checks.append(
+        Check(
             "HTTP validation",
             "OK" if cfg["enable_http_validation"] else "INFO",
             "Enabled." if cfg["enable_http_validation"] else "Disabled by config.",
+            scored=False,
+        )
+    )
+    checks.append(
+        Check(
+            "Prod approval environment",
+            "OK" if cfg["use_prod_approval_environment"] else "INFO",
+            f"GitHub environment: {prod_approval_environment(cfg)}",
+            scored=False,
+        )
+    )
+    checks.append(
+        Check(
+            "Separate AWS plan role",
+            "OK" if cfg["use_separate_aws_plan_role"] else "INFO",
+            "AWS_PLAN_ROLE_TO_ASSUME_ARN is required."
+            if cfg["use_separate_aws_plan_role"]
+            else "Plan jobs fall back to the deploy role.",
             scored=False,
         )
     )
@@ -1818,6 +1946,147 @@ def readiness_gap_rows(checks: list[Check]) -> list[list[str]]:
     ]
 
 
+def readiness_category_for_check(check: Check) -> str:
+    name = check.name
+    if name.startswith("GitHub") or name.startswith("Branch `") or name.startswith("Required check"):
+        return "GitHub"
+    if name == "Protection details":
+        return "GitHub"
+    if name in {
+        "`terraform` CLI",
+        "Terraform validate",
+        "Bootstrap validate",
+        "Backend bucket",
+        "Backend lock table",
+        "Rendered tfvars",
+        "State bucket",
+        "Lock table",
+    }:
+        return "Terraform"
+    if name in {
+        "`aws` CLI",
+        "AWS CLI",
+        "AWS identity",
+        "ECR repository",
+        "Lambda execution role",
+        "API Gateway",
+        "CloudWatch log group",
+    }:
+        return "AWS"
+    if name in {
+        "Snyk container scan",
+        "HTTP validation",
+        "DAST",
+        "Separate AWS plan role",
+    }:
+        return "Security"
+    if name in {
+        "Lambda image URI",
+        "Configured ECR image",
+        "Lambda function",
+        "Prod approval environment",
+    }:
+        return "Deployment"
+    return "Local"
+
+
+def grouped_readiness_checks(checks: list[Check]) -> dict[str, list[Check]]:
+    grouped = {category: [] for category in READINESS_CATEGORIES}
+    for check in checks:
+        grouped[readiness_category_for_check(check)].append(check)
+    return grouped
+
+
+def readiness_score_for_category(checks: list[Check]) -> int | None:
+    if not checks:
+        return None
+    points = 0
+    for check in checks:
+        if check.status == "OK":
+            points += 2
+        elif check.status in {"WARN", "INFO"}:
+            points += 1
+    return round(points / (len(checks) * 2) * 100)
+
+
+def readiness_breakdown_rows(checks: list[Check], compact: bool = False) -> list[list[str]]:
+    grouped = grouped_readiness_checks(checks)
+    rows: list[list[str]] = []
+    for category in READINESS_CATEGORIES:
+        category_checks = grouped[category]
+        score = readiness_score_for_category(category_checks)
+        score_text = "n/a" if score is None else f"{score}%"
+        if compact:
+            gaps = sum(1 for check in category_checks if check.status != "OK")
+            rows.append([category, score_text, str(gaps)])
+        else:
+            status_counts = {
+                "OK": sum(1 for check in category_checks if check.status == "OK"),
+                "WARN": sum(1 for check in category_checks if check.status == "WARN"),
+                "FAIL": sum(1 for check in category_checks if check.status == "FAIL"),
+                "INFO": sum(1 for check in category_checks if check.status == "INFO"),
+            }
+            rows.append(
+                [
+                    category,
+                    score_text,
+                    str(status_counts["OK"]),
+                    str(status_counts["WARN"]),
+                    str(status_counts["FAIL"]),
+                    str(status_counts["INFO"]),
+                ]
+            )
+    return rows
+
+
+def overall_breakdown_score(checks: list[Check]) -> int:
+    scores = [score for score in (readiness_score_for_category(group) for group in grouped_readiness_checks(checks).values()) if score is not None]
+    return round(sum(scores) / len(scores)) if scores else 100
+
+
+def score_status(score: int | None) -> str:
+    if score is None:
+        return info("n/a")
+    if score >= 90:
+        return ok(f"{score}%")
+    if score >= 60:
+        return warn(f"{score}%")
+    return fail(f"{score}%")
+
+
+def print_readiness_breakdown(checks: list[Check], compact: bool = False) -> None:
+    grouped = grouped_readiness_checks(checks)
+    rows: list[list[str]] = []
+    for raw_row in readiness_breakdown_rows(checks, compact=compact):
+        score = readiness_score_for_category(grouped[raw_row[0]])
+        row = [raw_row[0], score_status(score), *raw_row[2:]]
+        rows.append(row)
+    headers = ["Area", "Score", "Gaps"] if compact else ["Area", "Score", "OK", "WARN", "FAIL", "INFO"]
+    draw_table(headers, rows, title="Readiness")
+    print()
+    print(f"Overall: {score_status(overall_breakdown_score(checks))}  legacy score: {progress_bar(readiness_score(checks), width=18)}")
+
+
+def print_gap_summary(checks: list[Check], limit: int = 3) -> None:
+    rows = readiness_gap_rows(checks)[:limit]
+    if not rows:
+        print(ok("Readiness gaps: none."))
+        return
+    print(info("Readiness gaps ([i] details):"))
+    for check_name, status, detail, action in rows:
+        label = fail(status) if status == "FAIL" else warn(status)
+        print(f"  {label} {check_name}: {detail}")
+        print(f"    Fix: {action}")
+
+
+def collect_dashboard_checks(root: Path, cfg: dict[str, Any], mode: str = "full") -> list[Check]:
+    checks = collect_checks(root, cfg, deep=mode == "full")
+    if mode == "full":
+        checks.extend(collect_github_checks(root, cfg))
+        checks.extend(collect_branch_checks(root))
+    return checks
+
+
 def print_readiness_details(root: Path, deep: bool = False) -> None:
     cfg = load_config(root)
     checks = collect_checks(root, cfg, deep=deep)
@@ -1873,6 +2142,7 @@ def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
 def markdown_report(cfg: dict[str, Any], checks: list[Check]) -> str:
     score = readiness_score(checks)
     check_rows = [[check.name, check.status, check.detail] for check in checks]
+    breakdown_rows = readiness_breakdown_rows(checks, compact=True)
     control_report_rows = control_rows(cfg)
     env_report_rows = env_rows(cfg)
     generated_at = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -1883,6 +2153,7 @@ def markdown_report(cfg: dict[str, Any], checks: list[Check]) -> str:
             f"Project: `{cfg['project_name']}`",
             f"Region: `{cfg['aws_region']}`",
             f"Readiness: `{score}%`",
+            "## Score Breakdown\n\n" + markdown_table(["Area", "Score", "Gaps"], breakdown_rows),
             "## Checks\n\n" + markdown_table(["Check", "Status", "Detail"], check_rows),
             "## Environments\n\n"
             + markdown_table(["Env", "Memory", "Timeout", "Logs", "Burst/Rate", "CORS"], env_report_rows),
@@ -1901,6 +2172,10 @@ def next_actions(cfg: dict[str, Any], checks: list[Check]) -> list[str]:
         actions.append("- Set a real Terraform backend S3 bucket and run `devsecops render`.")
     if any(check.name == "`aws` CLI" and check.status != "OK" for check in checks):
         actions.append("- Install or configure AWS CLI before running cloud bootstrap checks.")
+    if cfg["enable_snyk_scan"]:
+        actions.append("- Configure `SNYK_TOKEN` so the enabled container scan can run.")
+    if cfg["use_separate_aws_plan_role"]:
+        actions.append("- Configure `AWS_PLAN_ROLE_TO_ASSUME_ARN` for lower-privilege Terraform plans.")
     if not cfg["enable_http_validation"]:
         actions.append("- Enable `/health` validation after the workload implements that route.")
     if not cfg["enable_dast"]:
@@ -1933,6 +2208,7 @@ def preset_rows() -> list[list[str]]:
         rows.append(
             [
                 name,
+                "on" if cfg["enable_snyk_scan"] else "off",
                 "on" if cfg["enable_http_validation"] else "off",
                 "on" if cfg["enable_dast"] else "off",
                 PRESET_DESCRIPTIONS[name],
@@ -1943,8 +2219,11 @@ def preset_rows() -> list[list[str]]:
 
 def preset_detail_rows(cfg: dict[str, Any]) -> list[list[str]]:
     rows: list[list[str]] = [
+        ["Snyk container scan", "on" if cfg["enable_snyk_scan"] else "off"],
         ["HTTP validation", "on" if cfg["enable_http_validation"] else "off"],
         ["DAST", "on" if cfg["enable_dast"] else "off"],
+        ["Prod approval environment", prod_approval_environment(cfg)],
+        ["Separate AWS plan role", "on" if cfg["use_separate_aws_plan_role"] else "off"],
     ]
     for env_name, env_cfg in cfg["environments"].items():
         rows.extend(
@@ -1961,7 +2240,7 @@ def preset_detail_rows(cfg: dict[str, Any]) -> list[list[str]]:
 
 
 def print_preset_list() -> None:
-    draw_table(["Preset", "HTTP", "DAST", "Description"], preset_rows(), title="Policy Presets")
+    draw_table(["Preset", "Snyk", "HTTP", "DAST", "Description"], preset_rows(), title="Policy Presets")
 
 
 def print_preset_detail(name: str) -> int:
@@ -1988,14 +2267,19 @@ def cmd_envs(args: argparse.Namespace) -> int:
 
 def control_rows(cfg: dict[str, Any]) -> list[list[str]]:
     image_status = "ON" if cfg["lambda_image_uri"] else "TODO"
+    snyk_status = "ON" if cfg["enable_snyk_scan"] else "OFF"
     health_status = "ON" if cfg["enable_http_validation"] else "OFF"
     dast_status = "ON" if cfg["enable_dast"] else "OFF"
+    approval_status = "ON" if cfg["use_prod_approval_environment"] else "OFF"
+    plan_role_status = "ON" if cfg["use_separate_aws_plan_role"] else "OFF"
     return [
         ["GitHub OIDC", "ON", "Deploy and plan roles use short-lived AWS credentials."],
+        ["Prod approval", approval_status, f"Deploy job uses `{prod_approval_environment(cfg)}` GitHub environment."],
+        ["Separate plan role", plan_role_status, "PR plans use a separate AWS role when configured."],
         ["Terraform state lock", "ON", f"DynamoDB table: {cfg['backend']['lock_table']}"],
         ["IaC scan", "ON", "Trivy config scan in GitHub Actions."],
         ["Immutable image", image_status, "LAMBDA_IMAGE_URI must avoid latest/bootstrap."],
-        ["Container scan", "OPTIONAL", "Snyk runs when SNYK_TOKEN is configured."],
+        ["Container scan", snyk_status, "Snyk runs when enabled and SNYK_TOKEN is configured."],
         ["Rollback", "ON", "Previous Lambda image is restored on failed deploy validation."],
         ["HTTP health", health_status, "Calls /health when ENABLE_HTTP_VALIDATION=true."],
         ["DAST", dast_status, "OWASP ZAP baseline when ENABLE_DAST=true."],
@@ -2031,19 +2315,97 @@ def cmd_architecture(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_dashboard(args: argparse.Namespace) -> int:
-    root = repo_root()
+def render_dashboard(root: Path, mode: str = "full", clear: bool = False) -> None:
+    if clear:
+        clear_screen()
+    mode = mode if mode in {"compact", "full"} else "full"
+    full = mode == "full"
     cfg = load_config(root)
+    checks = collect_dashboard_checks(root, cfg, mode=mode)
     header(cfg)
     print()
-    for line in menu_status(root, cfg):
+    for line in menu_status(root, cfg, checks=checks):
         print(line)
     print()
-    cmd_envs(argparse.Namespace())
+    print_readiness_breakdown(checks, compact=not full)
     print()
-    cmd_controls(argparse.Namespace())
+    print_gap_summary(checks, limit=3 if full else 2)
+    if not full:
+        print()
+        print(info("Run `devsecops dashboard --mode full` for GitHub/AWS/deep Terraform diagnostics."))
+        return
+    print()
+    draw_table(
+        ["Env", "Memory", "Timeout", "Logs", "Burst/Rate", "CORS"],
+        env_rows(cfg),
+        title="Environment Configuration",
+    )
+    print()
+    draw_table(["Control", "State", "Notes"], control_rows(cfg), title="Pipeline Controls")
     print()
     draw_box("Architecture", architecture_lines())
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    root = repo_root()
+    interval = max(1, int(args.interval))
+    while True:
+        render_dashboard(root, mode=args.mode, clear=bool(args.watch))
+        if not args.watch:
+            return 0
+        print()
+        print(info(f"Watching dashboard every {interval}s. Press Ctrl-C to stop."))
+        time.sleep(interval)
+
+
+def render_rich_tui(root: Path) -> bool:
+    try:
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.table import Table
+    except ImportError:
+        return False
+
+    cfg = load_config(root)
+    checks = collect_dashboard_checks(root, cfg, mode="compact")
+    console = Console()
+    console.print(
+        Panel(
+            f"Project: {cfg['project_name']}\nRegion: {cfg['aws_region']}\nOverall: {overall_breakdown_score(checks)}%",
+            title="DevSecOps Pipeline Kit",
+        )
+    )
+
+    table = Table(title="Readiness")
+    table.add_column("Area")
+    table.add_column("Score", justify="right")
+    table.add_column("Gaps", justify="right")
+    for area, score, gaps in readiness_breakdown_rows(checks, compact=True):
+        table.add_row(area, score, gaps)
+    console.print(table)
+
+    gap_table = Table(title="[i] Readiness Details")
+    gap_table.add_column("Check")
+    gap_table.add_column("Status")
+    gap_table.add_column("Fix")
+    for check_name, status, _detail, action in readiness_gap_rows(checks)[:5]:
+        gap_table.add_row(check_name, status, action)
+    if gap_table.row_count:
+        console.print(gap_table)
+    else:
+        console.print(Panel("All scored readiness checks are OK.", title="Readiness Details"))
+    console.print("[dim]Full Textual mode is intentionally deferred until doctor workflows stabilize.[/dim]")
+    return True
+
+
+def cmd_tui(args: argparse.Namespace) -> int:
+    root = repo_root()
+    if render_rich_tui(root):
+        return 0
+    print(warn("Rich/Textual UI is optional and not installed. Falling back to compact dashboard."))
+    print(info('Install optional UI dependencies with `pipx install ".[tui]"` or `python3 -m pip install -e ".[tui]"`.'))
+    print()
+    render_dashboard(root, mode="compact", clear=False)
     return 0
 
 
@@ -2122,6 +2484,66 @@ def cmd_preset(args: argparse.Namespace) -> int:
     print(fail("Unknown preset command: ") + command)
     print("Usage: devsecops preset list | show <name> | apply <name> [--render]")
     return 1
+
+
+def compose_summary_rows(cfg: dict[str, Any]) -> list[list[str]]:
+    return [
+        ["Snyk container scan", "yes" if cfg["enable_snyk_scan"] else "no"],
+        ["DAST", "yes" if cfg["enable_dast"] else "no"],
+        ["Health check", "yes" if cfg["enable_http_validation"] else "no"],
+        ["Strict CORS", "yes" if uses_strict_cors(cfg) else "no"],
+        ["Prod approval environment", "yes" if cfg["use_prod_approval_environment"] else "no"],
+        ["Separate AWS plan role", "yes" if cfg["use_separate_aws_plan_role"] else "no"],
+    ]
+
+
+def cmd_compose(args: argparse.Namespace) -> int:
+    root = repo_root()
+    current = load_config(root)
+    draw_box(
+        "Pipeline Composer",
+        [
+            "Choose controls for the generated local config, Terraform/GitHub helper artifacts, and readiness report.",
+            "Type `b`, `back`, `0`, or `cancel` at any prompt to stop without writing files.",
+        ],
+    )
+    try:
+        answers = {
+            "enable_snyk_scan": prompt_bool("Enable Snyk container scan", bool(current["enable_snyk_scan"]), allow_cancel=True),
+            "enable_dast": prompt_bool("Enable DAST", bool(current["enable_dast"]), allow_cancel=True),
+            "enable_http_validation": prompt_bool("Enable health check", bool(current["enable_http_validation"]), allow_cancel=True),
+            "use_strict_cors": prompt_bool("Use strict CORS", uses_strict_cors(current), allow_cancel=True),
+            "use_prod_approval_environment": prompt_bool(
+                "Use prod approval environment",
+                bool(current["use_prod_approval_environment"]),
+                allow_cancel=True,
+            ),
+            "use_separate_aws_plan_role": prompt_bool(
+                "Use separate AWS plan role",
+                bool(current["use_separate_aws_plan_role"]),
+                allow_cancel=True,
+            ),
+        }
+    except InputCancelled:
+        print(info("Compose cancelled. No files changed."))
+        return 0
+
+    cfg = compose_config(current, answers)
+    snapshot_before_change(root, "compose", "Before composing pipeline controls.")
+    write_config(root, cfg)
+    print(ok("Updated ") + str(config_path(root)))
+    draw_table(["Control", "Enabled"], compose_summary_rows(cfg), title="Composed Pipeline")
+
+    render_result = run_render(root, snapshot=False)
+    if render_result != 0:
+        return render_result
+
+    report_path = root / DIST_DIR / "readiness-report.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    checks = collect_checks(root, load_config(root), deep=False)
+    report_path.write_text(markdown_report(cfg, checks), encoding="utf-8")
+    print(ok("Wrote ") + str(report_path))
+    return 0
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -2267,6 +2689,11 @@ def run_init(root: Path, force: bool = False, defaults: bool = False, allow_canc
                 current["lambda_image_uri"],
                 allow_cancel=allow_cancel,
             )
+            cfg["enable_snyk_scan"] = prompt_bool(
+                "Enable Snyk container scan",
+                bool(current["enable_snyk_scan"]),
+                allow_cancel=allow_cancel,
+            )
             cfg["enable_http_validation"] = prompt_bool(
                 "Enable /health smoke test",
                 bool(current["enable_http_validation"]),
@@ -2275,6 +2702,16 @@ def run_init(root: Path, force: bool = False, defaults: bool = False, allow_canc
             cfg["enable_dast"] = prompt_bool(
                 "Enable OWASP ZAP DAST",
                 bool(current["enable_dast"]),
+                allow_cancel=allow_cancel,
+            )
+            cfg["use_prod_approval_environment"] = prompt_bool(
+                "Use prod approval environment",
+                bool(current["use_prod_approval_environment"]),
+                allow_cancel=allow_cancel,
+            )
+            cfg["use_separate_aws_plan_role"] = prompt_bool(
+                "Use separate AWS plan role",
+                bool(current["use_separate_aws_plan_role"]),
                 allow_cancel=allow_cancel,
             )
             cfg["backend"]["bucket"] = prompt_text(
@@ -2520,9 +2957,10 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
-def menu_status(root: Path, cfg: dict[str, Any]) -> list[str]:
-    checks = collect_checks(root, cfg, deep=False)
+def menu_status(root: Path, cfg: dict[str, Any], checks: list[Check] | None = None) -> list[str]:
+    checks = checks or collect_checks(root, cfg, deep=False)
     score = readiness_score(checks)
+    breakdown_score = overall_breakdown_score(checks)
     image_state = "configured" if cfg["lambda_image_uri"] else "missing"
     backend_state = "configured" if not cfg["backend"]["bucket"].startswith("replace-with") else "missing"
     return [
@@ -2532,7 +2970,7 @@ def menu_status(root: Path, cfg: dict[str, Any]) -> list[str]:
         f"Backend: {backend_state}",
         f"Health check: {'enabled' if cfg['enable_http_validation'] else 'disabled'}",
         f"DAST: {'enabled' if cfg['enable_dast'] else 'disabled'}",
-        "Readiness: " + progress_bar(score) + "  [i] details",
+        "Readiness: " + progress_bar(breakdown_score) + f"  scored: {score}%  [i] details",
     ]
 
 
@@ -2549,9 +2987,14 @@ def pause_for_menu() -> None:
 
 def print_main_menu(root: Path) -> None:
     cfg = load_config(root)
+    checks = collect_checks(root, cfg, deep=False)
     header(cfg)
-    for line in menu_status(root, cfg):
+    for line in menu_status(root, cfg, checks=checks):
         print(line)
+    print()
+    print_readiness_breakdown(checks, compact=True)
+    print()
+    print_gap_summary(checks, limit=2)
     print()
     print("[1] Dashboard")
     print("[2] Configure pipeline")
@@ -2570,6 +3013,7 @@ def print_main_menu(root: Path) -> None:
     print("[15] Show config")
     print("[16] Snapshots / Rollback")
     print("[17] AWS doctor")
+    print("[18] Pipeline composer")
     print("[0] Exit")
 
 
@@ -2684,7 +3128,7 @@ def cmd_menu(args: argparse.Namespace) -> int:
         if normalized_choice in {"i", "info", "readiness", "?"}:
             menu_readiness_section(root)
         elif choice == "1":
-            open_menu_section("Dashboard", cmd_dashboard, argparse.Namespace())
+            open_menu_section("Dashboard", cmd_dashboard, argparse.Namespace(mode="full", watch=False, interval=5))
         elif choice == "2":
             menu_config_section(root)
         elif choice == "3":
@@ -2731,6 +3175,8 @@ def cmd_menu(args: argparse.Namespace) -> int:
             menu_rollback_section(root)
         elif choice == "17":
             open_menu_section("AWS Doctor", cmd_aws_doctor, argparse.Namespace(environment="prod", strict=False))
+        elif choice == "18":
+            open_menu_section("Pipeline Composer", cmd_compose, argparse.Namespace())
         elif choice == "0":
             clear_screen()
             return 0
@@ -2753,7 +3199,13 @@ def build_parser() -> argparse.ArgumentParser:
     menu_parser.set_defaults(func=cmd_menu)
 
     dashboard_parser = subparsers.add_parser("dashboard", help="Print a one-screen pipeline dashboard.")
+    dashboard_parser.add_argument("--watch", action="store_true", help="Auto-refresh the dashboard until interrupted.")
+    dashboard_parser.add_argument("--interval", type=int, default=5, help="Seconds between dashboard refreshes in watch mode.")
+    dashboard_parser.add_argument("--mode", choices=["compact", "full"], default="full", help="Dashboard detail level.")
     dashboard_parser.set_defaults(func=cmd_dashboard)
+
+    tui_parser = subparsers.add_parser("tui", help="Open the optional Rich/Textual terminal UI.")
+    tui_parser.set_defaults(func=cmd_tui)
 
     envs_parser = subparsers.add_parser("envs", help="Print environment settings table.")
     envs_parser.set_defaults(func=cmd_envs)
@@ -2856,6 +3308,9 @@ def build_parser() -> argparse.ArgumentParser:
     preset_parser.add_argument("name", nargs="?", help="Preset name for `show` or `apply`.")
     preset_parser.add_argument("--render", action="store_true", help="Render artifacts after applying preset.")
     preset_parser.set_defaults(func=cmd_preset)
+
+    compose_parser = subparsers.add_parser("compose", help="Choose pipeline controls and generate matching config/artifacts.")
+    compose_parser.set_defaults(func=cmd_compose)
 
     plan_parser = subparsers.add_parser("plan", help="Run Terraform plan for an environment.")
     plan_parser.add_argument("environment", choices=ENVIRONMENTS)

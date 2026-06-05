@@ -1,4 +1,5 @@
 import argparse
+import importlib
 import tempfile
 import unittest
 import json
@@ -8,7 +9,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-import devsecops_cli as cli
+cli = importlib.import_module("devsecops_cli.main")
 
 
 class DevSecOpsCliTests(unittest.TestCase):
@@ -86,6 +87,7 @@ class DevSecOpsCliTests(unittest.TestCase):
 
     def test_preset_strict_enables_validation_controls(self) -> None:
         cfg = cli.preset_config("strict")
+        self.assertTrue(cfg["enable_snyk_scan"])
         self.assertTrue(cfg["enable_http_validation"])
         self.assertTrue(cfg["enable_dast"])
         self.assertEqual(cfg["environments"]["prod"]["lambda_timeout"], 300)
@@ -100,6 +102,7 @@ class DevSecOpsCliTests(unittest.TestCase):
             self.assertEqual(failures, [], preset_name)
 
         enterprise = cli.preset_config("enterprise")
+        self.assertTrue(enterprise["enable_snyk_scan"])
         self.assertTrue(enterprise["enable_http_validation"])
         self.assertTrue(enterprise["enable_dast"])
         self.assertEqual(enterprise["environments"]["prod"]["log_retention_days"], 1095)
@@ -141,12 +144,59 @@ class DevSecOpsCliTests(unittest.TestCase):
                 legacy_applied = cli.load_config(root)
                 self.assertEqual(legacy_applied["environments"]["prod"]["log_retention_days"], 30)
 
+    def test_compose_config_applies_control_answers(self) -> None:
+        cfg = cli.compose_config(
+            cli.default_config(),
+            {
+                "enable_snyk_scan": True,
+                "enable_dast": True,
+                "enable_http_validation": True,
+                "use_strict_cors": True,
+                "use_prod_approval_environment": False,
+                "use_separate_aws_plan_role": False,
+            },
+        )
+        self.assertTrue(cfg["enable_snyk_scan"])
+        self.assertTrue(cfg["enable_dast"])
+        self.assertTrue(cfg["enable_http_validation"])
+        self.assertFalse(cfg["use_prod_approval_environment"])
+        self.assertFalse(cfg["use_separate_aws_plan_role"])
+        self.assertTrue(cli.uses_strict_cors(cfg))
+        self.assertEqual(cli.prod_approval_environment(cfg), cli.NO_APPROVAL_ENVIRONMENT)
+
+    def test_compose_command_writes_config_artifacts_and_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            answers = [True, True, True, True, False, False]
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "prompt_bool", side_effect=answers):
+                with redirect_stdout(io.StringIO()):
+                    result = cli.cmd_compose(argparse.Namespace())
+
+            self.assertEqual(result, 0)
+            cfg = cli.load_config(root)
+            self.assertTrue(cfg["enable_snyk_scan"])
+            self.assertTrue(cfg["enable_dast"])
+            self.assertTrue(cfg["enable_http_validation"])
+            self.assertTrue(cli.uses_strict_cors(cfg))
+            self.assertFalse(cfg["use_prod_approval_environment"])
+            self.assertFalse(cfg["use_separate_aws_plan_role"])
+            self.assertTrue((root / cli.CONFIG_FILE).exists())
+            self.assertTrue((root / cli.GENERATED_TFVARS).exists())
+            self.assertTrue((root / cli.DIST_DIR / "github-setup.sh").exists())
+            report = root / cli.DIST_DIR / "readiness-report.md"
+            self.assertTrue(report.exists())
+            self.assertIn("Snyk container scan", report.read_text(encoding="utf-8"))
+
     def test_github_setup_script_contains_expected_commands(self) -> None:
         cfg = cli.default_config()
         cfg["lambda_image_uri"] = "123456789012.dkr.ecr.us-east-1.amazonaws.com/app:sha-abc123"
+        cfg["enable_snyk_scan"] = True
         script = cli.github_setup_script(cfg)
         self.assertIn("gh variable set PROJECT_NAME", script)
+        self.assertIn("gh variable set ENABLE_SNYK_SCAN", script)
+        self.assertIn("gh variable set PROD_APPROVAL_ENVIRONMENT", script)
         self.assertIn("gh secret set AWS_ROLE_TO_ASSUME_ARN", script)
+        self.assertIn("gh secret set SNYK_TOKEN", script)
         self.assertIn("sha-abc123", script)
 
     def test_markdown_report_contains_checks_and_actions(self) -> None:
@@ -154,8 +204,67 @@ class DevSecOpsCliTests(unittest.TestCase):
         checks = [cli.Check("Lambda image URI", "WARN", "Required before production deploy.")]
         report = cli.markdown_report(cfg, checks)
         self.assertIn("# DevSecOps Pipeline Readiness Report", report)
+        self.assertIn("## Score Breakdown", report)
         self.assertIn("## Checks", report)
         self.assertIn("Set `LAMBDA_IMAGE_URI`", report)
+
+    def test_readiness_breakdown_groups_scores_by_area(self) -> None:
+        checks = [
+            cli.Check("Local config", "OK", "ok"),
+            cli.Check("Terraform validate", "OK", "ok"),
+            cli.Check("GitHub variable PROJECT_NAME", "WARN", "missing"),
+            cli.Check("AWS identity", "FAIL", "missing"),
+            cli.Check("DAST", "INFO", "disabled", scored=False),
+            cli.Check("Lambda image URI", "WARN", "missing"),
+        ]
+        rows = cli.readiness_breakdown_rows(checks, compact=True)
+        by_area = {row[0]: row for row in rows}
+        self.assertEqual(by_area["Local"][1], "100%")
+        self.assertEqual(by_area["Terraform"][1], "100%")
+        self.assertEqual(by_area["GitHub"][1], "50%")
+        self.assertEqual(by_area["AWS"][1], "0%")
+        self.assertEqual(by_area["Security"][1], "50%")
+        self.assertEqual(by_area["Deployment"][2], "1")
+
+    def test_dashboard_renders_compact_and_full_modes(self) -> None:
+        cfg = cli.default_config()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cfg)
+            compact = io.StringIO()
+            with redirect_stdout(compact):
+                cli.render_dashboard(root, mode="compact")
+            compact_output = compact.getvalue()
+            self.assertIn("Readiness", compact_output)
+            self.assertIn("Run `devsecops dashboard --mode full`", compact_output)
+
+            full = io.StringIO()
+            dashboard_checks = [
+                cli.Check("Local config", "OK", "ok"),
+                cli.Check("GitHub variable PROJECT_NAME", "WARN", "missing"),
+            ]
+            with patch.object(cli, "collect_dashboard_checks", return_value=dashboard_checks):
+                with redirect_stdout(full):
+                    cli.render_dashboard(root, mode="full")
+            full_output = full.getvalue()
+            self.assertIn("Pipeline Controls", full_output)
+            self.assertIn("GitHub", full_output)
+
+    def test_tui_falls_back_to_compact_dashboard_without_rich(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.default_config())
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "render_rich_tui", return_value=False), patch.object(
+                cli,
+                "render_dashboard",
+            ) as render_dashboard:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.cmd_tui(argparse.Namespace())
+
+        self.assertEqual(result, 0)
+        self.assertIn("Rich/Textual UI is optional", buffer.getvalue())
+        render_dashboard.assert_called_once_with(root, mode="compact", clear=False)
 
     def test_parse_gh_items_from_json(self) -> None:
         payload = json.dumps(
@@ -174,17 +283,26 @@ class DevSecOpsCliTests(unittest.TestCase):
         variables = {
             "PROJECT_NAME": "wrong",
             "LAMBDA_IMAGE_URI": "repo.example/app:latest",
+            "ENABLE_SNYK_SCAN": "false",
             "ENABLE_HTTP_VALIDATION": "false",
             "ENABLE_DAST": "false",
+            "PROD_APPROVAL_ENVIRONMENT": "prod",
         }
         checks = cli.github_variable_checks(cfg, variables)
         self.assertTrue(any(check.name.endswith("PROJECT_NAME") and check.status == "WARN" for check in checks))
         self.assertTrue(any(check.name.endswith("LAMBDA_IMAGE_URI") and check.status == "WARN" for check in checks))
 
     def test_github_secret_checks_mark_required_and_optional(self) -> None:
-        checks = cli.github_secret_checks({"AWS_REGION": "", "AWS_ROLE_TO_ASSUME_ARN": ""})
+        cfg = cli.default_config()
+        checks = cli.github_secret_checks(cfg, {"AWS_REGION": "", "AWS_ROLE_TO_ASSUME_ARN": ""})
         self.assertTrue(any(check.name.endswith("AWS_PLAN_ROLE_TO_ASSUME_ARN") and check.status == "WARN" for check in checks))
         self.assertTrue(any(check.name.endswith("SNYK_TOKEN") and check.status == "INFO" for check in checks))
+
+        cfg["use_separate_aws_plan_role"] = False
+        cfg["enable_snyk_scan"] = True
+        checks = cli.github_secret_checks(cfg, {"AWS_REGION": "", "AWS_ROLE_TO_ASSUME_ARN": ""})
+        self.assertTrue(any(check.name.endswith("AWS_PLAN_ROLE_TO_ASSUME_ARN") and check.status == "INFO" for check in checks))
+        self.assertTrue(any(check.name.endswith("SNYK_TOKEN") and check.status == "WARN" for check in checks))
 
     def test_branch_protection_checks_required_statuses(self) -> None:
         protection = {
@@ -438,8 +556,11 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertTrue(any("[i] details" in line for line in status))
         self.assertIn("[1] Dashboard", output)
         self.assertIn("[i] details", output)
+        self.assertIn("Readiness gaps", output)
+        self.assertIn("Local", output)
         self.assertIn("[16] Snapshots / Rollback", output)
         self.assertIn("[17] AWS doctor", output)
+        self.assertIn("[18] Pipeline composer", output)
         self.assertIn("[0] Exit", output)
 
 

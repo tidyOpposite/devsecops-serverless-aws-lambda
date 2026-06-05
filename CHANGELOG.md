@@ -30,10 +30,19 @@ semantic versioning.
   explanations.
 * CLI dashboard, environment table, controls matrix, config validation,
   architecture view, non-interactive `set` command, and unit tests.
+* Dashboard watch mode, compact/full terminal layouts, category readiness
+  scoring, and visible main-menu readiness gap fixes.
+* Optional `devsecops tui` command with Rich rendering when optional UI
+  dependencies are installed, and compact dashboard fallback otherwise.
 * CLI readiness report export, GitHub setup script generation, environment
   presets, and optional Terraform workspace creation for plans.
 * Policy preset profiles now support `preset list`, `preset show <name>`, and
   `preset apply <name>`, with new `enterprise` and `student-demo` profiles.
+* Pipeline composer command for choosing Snyk, DAST, health checks, strict
+  CORS, production approval environment, and separate AWS plan role controls,
+  then regenerating config, helper artifacts, and readiness report.
+* Root Python packaging for `pipx install .`, package-based CLI modules, and
+  GitHub release wheel/sdist artifacts.
 * GitHub CLI integration with `gh-doctor`, `gh-status`, and safe
   `github-setup --apply` support for repository variables and provided
   secrets.

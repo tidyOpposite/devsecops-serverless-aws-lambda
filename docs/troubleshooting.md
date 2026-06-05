@@ -9,6 +9,9 @@ behind the CLI.
 Run:
 
 ```bash
+devsecops dashboard --mode compact
+devsecops dashboard --watch --interval 10
+devsecops tui
 devsecops readiness
 devsecops doctor
 devsecops doctor --deep
@@ -16,7 +19,13 @@ devsecops doctor --deep
 
 Use `[i] details` from the main menu or `devsecops readiness` to see only the
 checks that block 100% readiness and the concrete fix for each one. Use
-`devsecops doctor` when you need the full local check list.
+`devsecops doctor` when you need the full local check list. The dashboard
+groups readiness into Local, Terraform, GitHub, AWS, Security, and Deployment
+scores.
+
+`devsecops tui` uses optional Rich/Textual dependencies. Without them, it falls
+back to the compact dashboard. Install the extra with `pipx install ".[tui]"`
+or `python3 -m pip install -e ".[tui]"`.
 
 Generate a shareable report:
 
@@ -30,17 +39,24 @@ The report is written to `dist/devsecops/readiness-report.md`.
 
 ### `devsecops` command is not found
 
-Run the script directly:
+Install the root package with `pipx`:
 
 ```bash
-python3 cli/devsecops_cli.py menu
+pipx install .
+devsecops menu
 ```
 
-Or install the local CLI entry point:
+For development, install it in editable mode:
 
 ```bash
-python3 -m pip install -e cli
+python3 -m pip install -e .
 devsecops menu
+```
+
+Without installing, run the package module from the repository:
+
+```bash
+PYTHONPATH=cli python3 -m devsecops_cli menu
 ```
 
 ### I entered a menu section by mistake
@@ -111,6 +127,18 @@ devsecops set enable_dast true
 devsecops set environments.prod.lambda_memory_size 2048
 devsecops validate-config
 ```
+
+### Rebuild config and generated outputs from controls
+
+Run the composer when policy toggles drift across local config and GitHub
+helpers:
+
+```bash
+devsecops compose
+```
+
+It updates `.devsecops-pipeline.toml`, renders Terraform/GitHub helper
+artifacts, and rewrites `dist/devsecops/readiness-report.md`.
 
 ### Generated files look stale
 

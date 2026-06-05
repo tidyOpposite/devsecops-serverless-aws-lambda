@@ -40,6 +40,7 @@ env:
   TF_WORKING_DIR: terraform
   DEPLOY_ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
   LAMBDA_IMAGE_URI: ${{ vars.LAMBDA_IMAGE_URI || '' }}
+  ENABLE_SNYK_SCAN: ${{ vars.ENABLE_SNYK_SCAN || 'false' }}
   ENABLE_HTTP_VALIDATION: ${{ vars.ENABLE_HTTP_VALIDATION || 'false' }}
   ENABLE_DAST: ${{ vars.ENABLE_DAST || 'false' }}
 
@@ -164,7 +165,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: security-and-validate
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'deploy' && github.event.inputs.environment == 'prod' && github.ref == 'refs/heads/main'
-    environment: prod
+    environment: ${{ vars.PROD_APPROVAL_ENVIRONMENT || 'prod' }}
     env:
       DEPLOY_ENVIRONMENT: prod
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
@@ -190,22 +191,28 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Require Snyk token when scan is enabled
+        if: env.ENABLE_SNYK_SCAN == 'true' && env.SNYK_TOKEN == ''
+        run: |
+          echo "ENABLE_SNYK_SCAN is true, but SNYK_TOKEN is not configured." >&2
+          exit 1
+
       - name: Set up Node.js for Snyk
-        if: env.SNYK_TOKEN != ''
+        if: env.ENABLE_SNYK_SCAN == 'true' && env.SNYK_TOKEN != ''
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
       - name: Install Snyk CLI
-        if: env.SNYK_TOKEN != ''
+        if: env.ENABLE_SNYK_SCAN == 'true' && env.SNYK_TOKEN != ''
         run: npm install -g snyk
 
       - name: Login to Amazon ECR for image scan
-        if: env.SNYK_TOKEN != ''
+        if: env.ENABLE_SNYK_SCAN == 'true' && env.SNYK_TOKEN != ''
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Scan configured Lambda image with Snyk
-        if: env.SNYK_TOKEN != ''
+        if: env.ENABLE_SNYK_SCAN == 'true' && env.SNYK_TOKEN != ''
         run: snyk container test "${LAMBDA_IMAGE_URI}" --severity-threshold=high
 
       - name: Set up Terraform

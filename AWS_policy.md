@@ -71,11 +71,16 @@ can modify workflow behavior.
 After creating the roles, run:
 
 ```bash
+devsecops compose
 devsecops gh-setup --apply \
   --deploy-role-arn arn:aws:iam::<ACCOUNT_ID>:role/<DEPLOY_ROLE> \
   --plan-role-arn arn:aws:iam::<ACCOUNT_ID>:role/<PLAN_ROLE>
 devsecops gh-doctor
 ```
+
+If `devsecops compose` is run with "Use separate AWS plan role?" set to `no`,
+the generated GitHub setup treats `AWS_PLAN_ROLE_TO_ASSUME_ARN` as optional and
+the workflow falls back to `AWS_ROLE_TO_ASSUME_ARN` for plan jobs.
 
 ## Backend Access
 

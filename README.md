@@ -67,9 +67,12 @@ flowchart LR
 ## Repository Layout
 
 ```text
-cli/                                Primary terminal product and tests
+pyproject.toml                      Root Python package metadata for `pipx install .`
+cli/devsecops_cli/                  Installable CLI package and module entry point
+cli/tests/                          Focused CLI unit tests
 dist/devsecops/                     Ignored CLI-rendered helper artifacts
 .github/workflows/deploy.yml        CI, PR plan, production deploy, rollback, optional DAST
+.github/workflows/release.yml       Tag release workflow with wheel/sdist artifacts
 terraform/bootstrap/                One-time S3 backend and DynamoDB lock table
 terraform/modules/kms/              Customer-managed KMS key and alias
 terraform/modules/storage/          Private workload data bucket and access log bucket
@@ -84,7 +87,10 @@ docs/                               CLI-first security, scanner, cost, and troub
 Start with the CLI:
 
 ```bash
-python3 cli/devsecops_cli.py menu
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+pipx install .
+devsecops menu
 ```
 
 The main menu uses section-style navigation: selecting an item clears the
@@ -94,11 +100,17 @@ Enter. Input sections can be cancelled by typing `b`, `back`, `0`, or
 readiness indicator includes an `[i] details` shortcut that shows the checks
 blocking 100% readiness and the concrete fix for each one.
 
-Install it as a local console command if preferred:
+For development, install the local package in editable mode:
 
 ```bash
-python3 -m pip install -e cli
-devsecops menu
+python3 -m pip install -e .
+devsecops dashboard
+```
+
+Without installing, run the package module with `PYTHONPATH`:
+
+```bash
+PYTHONPATH=cli python3 -m devsecops_cli dashboard
 ```
 
 Recommended first run:
@@ -117,8 +129,12 @@ fully configured.
 Useful commands:
 
 ```bash
-devsecops dashboard     # one-screen terminal dashboard
+devsecops dashboard     # full terminal dashboard with readiness categories
+devsecops dashboard --mode compact
+devsecops dashboard --watch --interval 10
+devsecops tui           # optional Rich/Textual UI bridge
 devsecops init          # interactive setup wizard
+devsecops compose       # choose controls and generate config/artifacts/report
 devsecops preset list   # show available policy profiles
 devsecops preset show strict
 devsecops preset apply strict --render
@@ -143,6 +159,17 @@ devsecops plan dev --create-workspace
 devsecops explain oidc  # explains a security control
 ```
 
+The dashboard splits readiness into Local, Terraform, GitHub, AWS, Security,
+and Deployment scores. `--mode compact` keeps the view short; `--watch`
+auto-refreshes every `--interval` seconds.
+
+The core CLI remains dependency-free. To try the optional Rich/Textual UI:
+
+```bash
+pipx install ".[tui]"
+devsecops tui
+```
+
 The wizard writes `.devsecops-pipeline.toml`, which is intentionally ignored by
 Git. `devsecops render` writes:
 
@@ -157,8 +184,8 @@ dist/devsecops/setup-checklist.md
 `devsecops report` writes `dist/devsecops/readiness-report.md`.
 
 The CLI creates local snapshots before commands that overwrite CLI-owned
-configuration or generated artifacts: `init`, `set`, `preset`, `render`,
-`report`, and `github-setup --write`. Snapshots are stored under
+configuration or generated artifacts: `init`, `compose`, `set`, `preset`,
+`render`, `report`, and `github-setup --write`. Snapshots are stored under
 `.devsecops/snapshots/`, are ignored by Git, and can be inspected or restored:
 
 ```bash
@@ -197,6 +224,18 @@ devsecops preset apply student-demo --render  # simple demonstration profile
 
 For compatibility, `devsecops preset strict --render` still applies the named
 preset, but new scripts should use `devsecops preset apply <name>`.
+
+Use the pipeline composer when you want the CLI to ask for individual controls
+and then update all generated outputs in one pass:
+
+```bash
+devsecops compose
+```
+
+Composer asks whether to enable Snyk container scanning, DAST, health checks,
+strict CORS, the protected `prod` approval environment, and a separate AWS plan
+role. It updates `.devsecops-pipeline.toml`, renders Terraform/GitHub helper
+artifacts, and writes `dist/devsecops/readiness-report.md`.
 
 ## CLI-Managed Backend Bootstrap
 
@@ -267,9 +306,9 @@ Required repository secrets:
 | Secret | Purpose |
 | --- | --- |
 | `AWS_ROLE_TO_ASSUME_ARN` | Deployment role used by manual production deploy runs from `main`. |
-| `AWS_PLAN_ROLE_TO_ASSUME_ARN` | Optional read/plan role for PR plans. Falls back to deploy role if omitted. |
+| `AWS_PLAN_ROLE_TO_ASSUME_ARN` | Required when `use_separate_aws_plan_role=true`; otherwise PR plans fall back to the deploy role. |
 | `AWS_REGION` | AWS region, for example `us-east-1`. |
-| `SNYK_TOKEN` | Optional. Enables Snyk container scanning for the configured Lambda image. |
+| `SNYK_TOKEN` | Required when `ENABLE_SNYK_SCAN=true`; otherwise optional. |
 
 Repository variables:
 
@@ -277,8 +316,10 @@ Repository variables:
 | --- | --- | --- |
 | `PROJECT_NAME` | `devsecops-pipeline` | Prefix for AWS resources and ECR repository names. |
 | `LAMBDA_IMAGE_URI` | none | Required for manual production deploy. Immutable image URI deployed to Lambda. |
+| `ENABLE_SNYK_SCAN` | `false` | When `true` and `SNYK_TOKEN` is present, CI scans the configured image with Snyk. |
 | `ENABLE_HTTP_VALIDATION` | `false` | When `true`, CI calls the API Gateway `/health` URL after deployment. |
 | `ENABLE_DAST` | `false` | When `true`, CI runs OWASP ZAP baseline scan against the API Gateway invoke URL. |
+| `PROD_APPROVAL_ENVIRONMENT` | `prod` | GitHub environment used by the production deploy job. Composer sets `devsecops-no-approval` when approval is disabled. |
 
 Recommended branch protection for `main`:
 
@@ -299,7 +340,8 @@ Recommended branch protection for `main`:
 
 ## Deployment Flow
 
-1. Configure local pipeline state with `devsecops init`, `set`, or `preset`.
+1. Configure local pipeline state with `devsecops compose`, `init`, `set`, or
+   `preset`.
 2. Render generated artifacts with `devsecops render`.
 3. Check readiness with `devsecops readiness`, `doctor`, and GitHub diagnostics.
 4. Validate Terraform formatting and configuration in GitHub Actions on pull
@@ -357,6 +399,7 @@ curl "$(terraform output -raw api_gateway_health_url)"
 * [Troubleshooting guide](docs/troubleshooting.md)
 * [AWS OIDC and IAM policy guidance](AWS_policy.md)
 * [Changelog](CHANGELOG.md)
+* [v0.2.0 release notes](docs/release-v0.2.0.md)
 * [v0.1.0 release notes](docs/release-v0.1.0.md)
 
 ## Current Limitations
