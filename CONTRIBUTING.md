@@ -1,27 +1,82 @@
 # Contributing
 
-This repository is an open-source DevSecOps reference pipeline for AWS Lambda
-container workloads. Contributions are welcome when they improve correctness,
-security, reproducibility, documentation, or maintainability.
+This repository is now developed as a CLI-first DevSecOps product for AWS
+Lambda pipelines. Contributions are welcome when they improve the terminal
+experience, correctness, security, reproducibility, documentation, or the
+Terraform/GitHub execution layer behind the CLI.
+
+## Product Priorities
+
+The CLI is the primary user interface. Changes should keep these priorities in
+mind:
+
+* Clear terminal workflows for setup, validation, rendering, diagnostics, and
+  rollback.
+* Actionable readiness feedback instead of raw tool output wherever possible.
+* Safe defaults, explicit confirmation for risky actions, and local snapshots
+  before overwriting CLI-owned files.
+* Terraform and GitHub Actions behavior that can be configured, explained, and
+  verified from the CLI.
+* Documentation that starts with `devsecops ...` commands before manual
+  Terraform, AWS, or GitHub fallback steps.
 
 ## Useful Contribution Areas
 
-- CI/CD hardening for GitHub Actions and AWS OIDC.
-- Terraform security improvements and least-privilege IAM refinements.
-- SAST, SCA, IaC, container scanning, and release workflow automation.
-- Safer Lambda input validation, observability, and cost controls.
-- Documentation for adapting the pipeline to real AWS accounts.
+* CLI navigation, prompts, command ergonomics, packaging, and tests.
+* Readiness checks for local tooling, Terraform, GitHub, AWS, security gates,
+  and deployment state.
+* GitHub CLI integration for repository variables, secrets, Actions status, and
+  branch protection.
+* AWS diagnostics for backend, ECR, Lambda, API Gateway, CloudWatch, and IAM.
+* Terraform security improvements and least-privilege IAM refinements.
+* Scanner integration, policy presets, reports, and release workflow
+  automation.
+* Documentation for using the CLI in real AWS accounts.
 
 ## Development Notes
 
-1. Do not commit cloud credentials, API tokens, Terraform state, or `.tfvars`
-   files.
-2. Keep security scanner failures visible. Avoid suppressions unless the risk
+1. Treat CLI behavior as product behavior. If a change affects commands,
+   prompts, menu navigation, generated artifacts, or readiness scoring, update
+   tests and documentation in the same change.
+2. Do not commit cloud credentials, API tokens, Terraform state, local CLI
+   config, snapshots, or `.tfvars` files.
+3. Keep security scanner failures visible. Avoid suppressions unless the risk
    is documented and intentionally accepted.
-3. Prefer small pull requests with clear rationale and validation notes.
-4. Run the relevant local checks where possible before opening a pull request.
+4. Prefer small pull requests with clear rationale and validation notes.
+5. Preserve dependency-free core CLI flows unless a dependency is clearly worth
+   the packaging and installation cost.
+
+## Local Checks
+
+Run the focused CLI checks before opening a pull request:
+
+```bash
+python3 -m py_compile cli/devsecops_cli.py cli/tests/test_devsecops_cli.py
+PYTHONPATH=cli python3 -m unittest discover -s cli/tests -v
+python3 cli/devsecops_cli.py readiness
+```
+
+For infrastructure changes, also run the relevant Terraform and workflow
+validation:
+
+```bash
+terraform -chdir=terraform fmt -check -recursive
+terraform -chdir=terraform validate
+ruby -e 'require "yaml"; YAML.load_file(".github/workflows/deploy.yml")'
+```
+
+## Documentation
+
+Documentation should be CLI-first:
+
+* Start with the CLI command that performs or diagnoses the workflow.
+* Explain generated files and Terraform/GitHub behavior as implementation
+  details behind that command.
+* Include manual commands only as fallback or advanced operator guidance.
+* Update `README.md`, `CHANGELOG.md`, and the relevant document under `docs/`
+  for user-visible behavior changes.
 
 ## Security
 
-Please do not disclose vulnerabilities publicly before they are reviewed.
-Use the process described in `SECURITY.md`.
+Please do not disclose vulnerabilities publicly before they are reviewed. Use
+the process described in `SECURITY.md`.

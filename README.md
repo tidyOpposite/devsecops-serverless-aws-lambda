@@ -1,34 +1,48 @@
-# Secure Serverless DevSecOps Pipeline for AWS Lambda
+# DevSecOps Pipeline Kit CLI for AWS Lambda
 
-Reference implementation of a security-focused CI/CD pipeline for a
-containerized AWS Lambda workload. The repository demonstrates how to combine
-GitHub Actions, Terraform workspaces, AWS OIDC, immutable container images,
-SAST, SCA, IaC scanning, container scanning, DAST, deployment validation, and
-automatic Lambda rollback in one reproducible example.
+DevSecOps Pipeline Kit is a terminal-first product for configuring,
+validating, and operating a secure AWS Lambda deployment pipeline. The CLI is
+the primary user interface; Terraform, GitHub Actions, AWS OIDC, scanners, and
+rollback logic are the execution layer that the CLI configures and checks.
 
-The demo workload is a GIF preview generator: a static S3 frontend uploads a
-base64-encoded video to API Gateway, Lambda runs FFmpeg, and generated GIFs are
-written to a private S3 bucket behind presigned URLs.
+Use the CLI to build a local pipeline configuration, render Terraform and
+GitHub helper artifacts, inspect readiness, diagnose GitHub/AWS setup gaps, and
+recover from local configuration changes with snapshots.
+
+This repository does not include sample Lambda application source code. The
+pipeline expects a prebuilt immutable Lambda container image through
+`LAMBDA_IMAGE_URI`.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
+  operator["Operator"] --> cli["DevSecOps CLI"]
+  cli --> config["Local pipeline config"]
+  cli --> readiness["Readiness + diagnostics"]
+  cli --> generated["Rendered Terraform/GitHub artifacts"]
+  cli --> snapshots["Local snapshots + rollback"]
+  generated --> terraform["Terraform modules"]
+  generated --> githubSetup["GitHub variables/secrets"]
+  githubSetup --> checks
+  githubSetup --> deploy
+  terraform --> checks
+  terraform --> deploy
   developer["Developer"] --> pr["Pull Request"]
-  pr --> checks["GitHub Actions: SAST, SCA, IaC validate"]
+  pr --> checks["GitHub Actions: Terraform validate + IaC scan"]
   checks --> plan["Terraform plan in PR comment"]
   main["Merge to main"] --> deploy["Production deploy workflow"]
   deploy --> oidc["GitHub OIDC -> AWS IAM role"]
   oidc --> tfstate["S3 Terraform state + DynamoDB lock"]
-  deploy --> ecr["ECR immutable SHA image"]
-  ecr --> lambda["AWS Lambda container"]
-  frontend["S3 static frontend"] --> api["API Gateway HTTP API"]
-  api --> lambda
-  lambda --> gifs["Private S3 output bucket"]
+  deploy --> image["Immutable Lambda image URI"]
+  deploy --> ecr["ECR repository for workload images"]
+  image --> lambda["AWS Lambda container"]
+  api["API Gateway HTTP API"] --> lambda
+  lambda --> data["Private workload data bucket"]
   lambda --> dlq["SQS DLQ"]
   lambda --> logs["CloudWatch Logs + X-Ray"]
-  deploy --> dast["OWASP ZAP DAST"]
-  dast --> rollback["Rollback to previous Lambda image on failure"]
+  deploy --> validation["Optional /health + OWASP ZAP validation"]
+  validation --> rollback["Rollback to previous Lambda image on failure"]
   rollback --> lambda
 ```
 
@@ -36,45 +50,162 @@ flowchart LR
 
 | Area | Implementation |
 | --- | --- |
-| Environments | `dev`, `staging`, and `prod` are mapped to Terraform workspaces. Resource names include the environment, for example `gif-generator-prod-lambda`. |
+| CLI product | Dependency-free terminal menu, setup wizard, readiness dashboard, config presets, reports, snapshots, rollback, and diagnostics. |
+| CLI-managed config | `.devsecops-pipeline.toml` stores local settings and `devsecops render` generates ignored Terraform/GitHub helper artifacts. |
+| Readiness diagnostics | `devsecops readiness`, `[i] details`, `doctor`, `gh-doctor`, `actions-status`, and `branch-doctor` explain what blocks a deploy-ready pipeline. |
+| Environments | `dev`, `staging`, and `prod` are mapped to Terraform workspaces. Resource names include the environment, for example `devsecops-pipeline-prod-lambda`. |
 | Terraform state | Remote S3 backend with DynamoDB locking. `terraform/bootstrap` creates both prerequisites. |
 | IaC structure | Root Terraform composes modules in `terraform/modules`: `kms`, `storage`, `ecr`, `lambda`, and `api-gateway`. |
-| PR workflow | Pull requests run SAST/SCA/IaC validation and publish a Terraform plan as a PR comment plus artifact. |
+| PR workflow | Pull requests run Terraform formatting, validation, Trivy IaC scanning, and publish a Terraform plan as a PR comment plus artifact. |
 | Main deploy | `terraform apply` runs only on `push` to `main`, which represents a merge path. Manual workflow runs can produce plans but do not apply. |
-| Image deployment | ECR uses immutable tags. The workflow deploys `sha-<commit>` image URIs instead of mutable `latest`. |
-| Rollback | The deploy job captures the previous Lambda image URI and restores it automatically if apply, smoke test, or DAST validation fails. |
-| DAST | OWASP ZAP baseline scan runs against the deployed API after Lambda health checks pass. |
-| Docker hardening | Multi-stage build, digest-pinned AWS Lambda base image, no build tools in runtime, and explicit non-root runtime user. |
+| Image deployment | The deploy workflow requires `LAMBDA_IMAGE_URI` and rejects mutable `latest` or `bootstrap` tags. |
+| Container scanning | Snyk can scan the configured image when `SNYK_TOKEN` is present. |
+| Rollback | The deploy job captures the previous Lambda image URI and restores it automatically if apply or enabled validation fails. |
+| Optional validation | `/health` smoke test and OWASP ZAP baseline DAST can be enabled with repository variables. |
 
 ## Repository Layout
 
 ```text
-.github/workflows/deploy.yml        CI, PR plan, production deploy, rollback, DAST
+cli/                                Primary terminal product and tests
+dist/devsecops/                     Ignored CLI-rendered helper artifacts
+.github/workflows/deploy.yml        CI, PR plan, production deploy, rollback, optional DAST
 terraform/bootstrap/                One-time S3 backend and DynamoDB lock table
 terraform/modules/kms/              Customer-managed KMS key and alias
-terraform/modules/storage/          S3 frontend/output/log buckets
+terraform/modules/storage/          Private workload data bucket and access log bucket
 terraform/modules/ecr/              Immutable ECR repository and lifecycle policy
 terraform/modules/lambda/           Lambda, IAM role, logs, and SQS DLQ
 terraform/modules/api-gateway/      HTTP API, integration, stage, access logs
-lambda_function/                    Demo Python Lambda workload
-frontend/                           Static browser client
-docs/                               Security model, scanner rationale, costs, troubleshooting
+docs/                               CLI-first security, scanner, cost, and troubleshooting docs
 ```
 
-## One-Time Backend Bootstrap
+## Quick Start
 
-Terraform cannot create the S3 backend it is already using. Create the remote
-state bucket and DynamoDB lock table once with the bootstrap stack:
+Start with the CLI:
 
 ```bash
-cd terraform/bootstrap
-terraform init
-terraform apply \
-  -var="state_bucket_name=<globally-unique-state-bucket>" \
-  -var="lock_table_name=gif-generator-terraform-locks"
+python3 cli/devsecops_cli.py menu
 ```
 
-Copy the output values into `terraform/backend.tf`:
+The main menu uses section-style navigation: selecting an item clears the
+terminal, opens that section, and returns to the main menu when you press
+Enter. Input sections can be cancelled by typing `b`, `back`, `0`, or
+`cancel`; the configuration wizard returns without saving when cancelled. The
+readiness indicator includes an `[i] details` shortcut that shows the checks
+blocking 100% readiness and the concrete fix for each one.
+
+Install it as a local console command if preferred:
+
+```bash
+python3 -m pip install -e cli
+devsecops menu
+```
+
+Recommended first run:
+
+```bash
+devsecops init
+devsecops readiness
+devsecops render
+devsecops report
+```
+
+The CLI is intentionally dependency-free for core flows, so it can run before a
+Python environment, Terraform backend, GitHub repository, or AWS credentials are
+fully configured.
+
+Useful commands:
+
+```bash
+devsecops dashboard     # one-screen terminal dashboard
+devsecops init          # interactive setup wizard
+devsecops preset strict # apply minimal/balanced/strict config profile
+devsecops doctor        # readiness report
+devsecops readiness     # shows what blocks 100% readiness
+devsecops doctor --deep # includes Terraform validate and AWS identity checks
+devsecops envs          # environment settings table
+devsecops controls      # security controls matrix
+devsecops render        # writes ignored Terraform/GitHub helper artifacts
+devsecops report        # exports Markdown readiness report
+devsecops snapshots     # lists local restore snapshots
+devsecops rollback --last --dry-run # previews rollback to the newest snapshot
+devsecops github-setup  # prints gh commands for repo variables/secrets
+devsecops gh-setup --apply --deploy-role-arn arn:aws:iam::123456789012:role/deploy
+devsecops gh-doctor     # checks GitHub variables/secrets through gh
+devsecops gh-status     # shows recent GitHub Actions runs
+devsecops actions-status # shows recent runs and failed jobs
+devsecops branch-doctor # checks main branch protection
+devsecops set backend.bucket my-state-bucket --render
+devsecops plan dev --create-workspace
+devsecops explain oidc  # explains a security control
+```
+
+The wizard writes `.devsecops-pipeline.toml`, which is intentionally ignored by
+Git. `devsecops render` writes:
+
+```text
+terraform/generated.auto.tfvars
+dist/devsecops/backend.tf
+dist/devsecops/github-variables.env
+dist/devsecops/github-setup.sh
+dist/devsecops/setup-checklist.md
+```
+
+`devsecops report` writes `dist/devsecops/readiness-report.md`.
+
+The CLI creates local snapshots before commands that overwrite CLI-owned
+configuration or generated artifacts: `init`, `set`, `preset`, `render`,
+`report`, and `github-setup --write`. Snapshots are stored under
+`.devsecops/snapshots/`, are ignored by Git, and can be inspected or restored:
+
+```bash
+devsecops snapshots
+devsecops snapshots --show 1
+devsecops rollback --last --dry-run
+devsecops rollback --to <number-or-id>
+```
+
+Rollback restores only the local files managed by the CLI, such as
+`.devsecops-pipeline.toml`, `terraform/generated.auto.tfvars`, and generated
+files under `dist/devsecops/`. Before a rollback is applied, the CLI creates a
+new safety snapshot of the current state.
+
+The `set` command supports non-interactive configuration for scripts and quick
+edits:
+
+```bash
+devsecops set lambda_image_uri 123456789012.dkr.ecr.us-east-1.amazonaws.com/app:sha-a1b2c3
+devsecops set enable_dast true
+devsecops set environments.prod.lambda_timeout 300 --render
+devsecops validate-config
+```
+
+Presets provide a quick starting point:
+
+```bash
+devsecops preset minimal --render   # low-cost local/dev experimentation
+devsecops preset balanced --render  # default reference settings
+devsecops preset strict --render    # enables health validation and DAST
+```
+
+## CLI-Managed Backend Bootstrap
+
+Terraform cannot create the S3 backend it is already using. Configure the
+backend values through the CLI, render helper artifacts, and let the CLI run the
+bootstrap stack:
+
+```bash
+devsecops set backend.bucket <globally-unique-state-bucket> --render
+devsecops set backend.lock_table devsecops-pipeline-terraform-locks --render
+devsecops bootstrap
+devsecops bootstrap --apply
+```
+
+`devsecops bootstrap` plans by default. Use `--apply` only after reviewing the
+target AWS account, bucket name, and lock table name.
+
+The rendered backend template is written to `dist/devsecops/backend.tf`. Copy
+or adapt it into `terraform/backend.tf` when you are ready to initialize the
+root Terraform module:
 
 ```hcl
 terraform {
@@ -83,7 +214,7 @@ terraform {
     key                  = "serverless-lambda/terraform.tfstate"
     region               = "us-east-1"
     encrypt              = true
-    dynamodb_table       = "gif-generator-terraform-locks"
+    dynamodb_table       = "devsecops-pipeline-terraform-locks"
     workspace_key_prefix = "environments"
   }
 }
@@ -91,23 +222,33 @@ terraform {
 
 ## Environment Workflow
 
-Use Terraform workspaces for environment isolation:
+Use the CLI for the normal environment workflow:
 
 ```bash
-cd terraform
-terraform init
-terraform workspace new dev
-terraform workspace new staging
-terraform workspace new prod
-terraform workspace select dev
-terraform plan -var="project_name=gif-generator"
+devsecops envs
+devsecops preset balanced --render
+devsecops plan dev --create-workspace
+devsecops plan staging --create-workspace
+devsecops plan prod --create-workspace
 ```
 
-The active workspace selects `environment_config` from
-`terraform/variables.tf`. Running in the default workspace falls back to
-`var.environment`, which defaults to `dev`.
+The CLI delegates to Terraform workspaces under the hood. The active workspace
+selects `environment_config` from `terraform/variables.tf`. Running in the
+default workspace falls back to `var.environment`, which defaults to `dev`.
 
 ## GitHub Actions Setup
+
+Generate repository setup commands from the same local config used by
+Terraform:
+
+```bash
+devsecops github-setup --write
+devsecops gh-setup --apply \
+  --deploy-role-arn arn:aws:iam::<account-id>:role/<deploy-role> \
+  --plan-role-arn arn:aws:iam::<account-id>:role/<plan-role>
+devsecops gh-doctor
+devsecops branch-doctor
+```
 
 Required repository secrets:
 
@@ -116,13 +257,16 @@ Required repository secrets:
 | `AWS_ROLE_TO_ASSUME_ARN` | Deployment role used on `push` to `main`. |
 | `AWS_PLAN_ROLE_TO_ASSUME_ARN` | Optional read/plan role for PR plans. Falls back to deploy role if omitted. |
 | `AWS_REGION` | AWS region, for example `us-east-1`. |
-| `SNYK_TOKEN` | Optional but recommended. Enables Snyk dependency and container gates. |
+| `SNYK_TOKEN` | Optional. Enables Snyk container scanning for the configured Lambda image. |
 
-Optional repository variable:
+Repository variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PROJECT_NAME` | `gif-generator` | Prefix for AWS resources and ECR repository names. |
+| `PROJECT_NAME` | `devsecops-pipeline` | Prefix for AWS resources and ECR repository names. |
+| `LAMBDA_IMAGE_URI` | none | Required on `push` to `main`. Immutable image URI deployed to Lambda. |
+| `ENABLE_HTTP_VALIDATION` | `false` | When `true`, CI calls the API Gateway `/health` URL after deployment. |
+| `ENABLE_DAST` | `false` | When `true`, CI runs OWASP ZAP baseline scan against the API Gateway invoke URL. |
 
 Recommended branch protection for `main`:
 
@@ -136,22 +280,36 @@ Recommended branch protection for `main`:
 | --- | --- | --- | --- |
 | Pull request to `main` | `dev` | `plan` only | No apply, no AWS mutation except workspace selection if missing. |
 | Manual `workflow_dispatch` | selected `dev/staging/prod` | `plan` only | No apply. |
-| Push to `main` | `prod` | `apply` | Build, scan, push immutable image, deploy Lambda, smoke test, DAST, frontend sync. |
+| Push to `main` | `prod` | `apply` | Scan configured image when enabled, deploy Lambda, optionally validate HTTP and DAST, rollback on failure. |
 | Push tag `v*.*.*` | n/a | n/a | Publish GitHub Release from `docs/release-<tag>.md` or `CHANGELOG.md`. |
 
 ## Deployment Flow
 
-1. Validate code and Terraform formatting.
-2. Run Bandit SAST, Snyk dependency scan, and Trivy IaC scan.
-3. Apply only KMS and ECR bootstrap targets so the image repository exists.
-4. Build a Linux amd64 Lambda image from the digest-pinned Dockerfile.
-5. Scan the image with Snyk and push it to ECR as `sha-<commit>`.
-6. Capture the previously deployed Lambda image URI.
-7. Apply the full Terraform workload with the new immutable image URI.
-8. Wait for Lambda, call `/health`, and run OWASP ZAP baseline DAST.
-9. If deployment validation fails, update Lambda back to the previous image and
-   re-apply Terraform with the previous URI to remove state drift.
-10. Sync the frontend artifact to S3 only after backend validation succeeds.
+1. Configure local pipeline state with `devsecops init`, `set`, or `preset`.
+2. Render generated artifacts with `devsecops render`.
+3. Check readiness with `devsecops readiness`, `doctor`, and GitHub diagnostics.
+4. Validate Terraform formatting and configuration in GitHub Actions.
+5. Run Trivy IaC scanning.
+6. Require an immutable `LAMBDA_IMAGE_URI` on production deploys.
+7. Optionally scan the configured Lambda image with Snyk.
+8. Apply KMS and ECR bootstrap targets so supporting resources exist.
+9. Capture the previously deployed Lambda image URI.
+10. Apply the full Terraform workload with the configured image URI.
+11. Wait for the Lambda update to complete.
+12. Optionally call `/health` and run OWASP ZAP baseline DAST.
+13. If deployment validation fails, update Lambda back to the previous image
+    and re-apply Terraform with the previous URI to remove state drift.
+
+## Workload Image Contract
+
+The supplied image must be compatible with Lambda container package type and
+must be published before the production deploy workflow runs. Use immutable tags
+or image digests; do not use `latest`.
+
+If `ENABLE_HTTP_VALIDATION=true`, the image must handle API Gateway HTTP API
+events and return a successful response for `GET /health`. If
+`ENABLE_DAST=true`, the API should be safe for a passive OWASP ZAP baseline
+scan.
 
 ## Useful Terraform Outputs
 
@@ -162,32 +320,17 @@ environment = "prod"
 terraform_workspace = "prod"
 api_gateway_health_url = "https://abc123.execute-api.us-east-1.amazonaws.com/health"
 api_gateway_invoke_url = "https://abc123.execute-api.us-east-1.amazonaws.com/"
-ecr_repository_name = "gif-generator-prod-lambda-repo"
-ecr_repository_url = "123456789012.dkr.ecr.us-east-1.amazonaws.com/gif-generator-prod-lambda-repo"
-frontend_s3_website_url = "http://gif-generator-prod-frontend-123456789012.s3-website-us-east-1.amazonaws.com"
-lambda_function_name = "gif-generator-prod-lambda"
-output_s3_bucket_name = "gif-generator-prod-output-gifs-123456789012"
+ecr_repository_name = "devsecops-pipeline-prod-lambda-repo"
+ecr_repository_url = "123456789012.dkr.ecr.us-east-1.amazonaws.com/devsecops-pipeline-prod-lambda-repo"
+lambda_function_name = "devsecops-pipeline-prod-lambda"
+output_s3_bucket_name = "devsecops-pipeline-prod-workload-data-123456789012"
 ```
 
-## Demo API
-
-Health check:
+Health check, when the workload implements `/health`:
 
 ```bash
 curl "$(terraform output -raw api_gateway_health_url)"
 ```
-
-Generate a GIF preview:
-
-```bash
-base64 < test_video.mp4 | tr -d '\n' > video.b64
-curl -X POST \
-  --header "Content-Type: video/mp4" \
-  --data-binary "@video.b64" \
-  "$(terraform output -raw api_gateway_invoke_url)"
-```
-
-The response contains a presigned S3 URL for the generated GIF.
 
 ## Reference Documents
 
@@ -201,11 +344,13 @@ The response contains a presigned S3 URL for the generated GIF.
 
 ## Current Limitations
 
-* The public S3 website is intentionally simple for the reference
-  implementation. Production systems should usually put CloudFront with OAC in
-  front of S3.
-* The API is unauthenticated to keep the demo focused on CI/CD controls.
-  Add Cognito, IAM auth, JWT authorizers, or API keys before handling sensitive
+* Application source, dependency scanning, and image build logic are expected to
+  live in the workload repository or an upstream release workflow.
+* The CLI is the product surface, but Terraform and GitHub Actions remain the
+  execution layer. Advanced operators may still need to inspect Terraform plans
+  and workflow logs directly.
+* The API is unauthenticated to keep the kit focused on pipeline controls. Add
+  Cognito, IAM auth, JWT authorizers, or API keys before handling sensitive
   workloads.
-* The Lambda container is pinned to x86_64 because FFmpeg is downloaded as an
-  amd64 static build. ARM64 support is tracked as roadmap work.
+* Optional DAST is a passive baseline scan only. Authenticated flows and
+  business-logic checks need workload-specific tests.

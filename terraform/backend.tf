@@ -4,7 +4,7 @@ terraform {
     key                  = "serverless-lambda/terraform.tfstate"
     region               = "us-east-1"
     encrypt              = true
-    dynamodb_table       = "gif-generator-terraform-locks"
+    dynamodb_table       = "devsecops-pipeline-terraform-locks"
     workspace_key_prefix = "environments"
   }
 }

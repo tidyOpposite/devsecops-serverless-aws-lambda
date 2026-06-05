@@ -130,6 +130,11 @@ dmypy.json
 awscliv2.zip
 aws/
 
+# DevSecOps Pipeline Kit local config
+.devsecops-pipeline.toml
+.devsecops/
+DEVSECOPS_CLI_ROADMAP.md
+
 # Terraform files
 .terraform/
 *.tfstate

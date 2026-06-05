@@ -17,14 +17,14 @@ variable "state_bucket_name" {
 variable "lock_table_name" {
   description = "DynamoDB table name used by the Terraform S3 backend for state locking."
   type        = string
-  default     = "gif-generator-terraform-locks"
+  default     = "devsecops-pipeline-terraform-locks"
 }
 
 variable "tags" {
   description = "Tags applied to backend resources."
   type        = map(string)
   default = {
-    Project   = "gif-generator"
+    Project   = "devsecops-pipeline"
     ManagedBy = "Terraform"
     Purpose   = "terraform-state"
   }

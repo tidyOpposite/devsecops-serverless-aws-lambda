@@ -88,7 +88,7 @@ resource "aws_cloudwatch_log_group" "lambda_log_group" {
   tags              = var.tags
 }
 
-resource "aws_lambda_function" "gif_generator_lambda" {
+resource "aws_lambda_function" "workload" {
   function_name = local.function_name
   role          = aws_iam_role.lambda_exec_role.arn
   package_type  = "Image"
@@ -107,10 +107,9 @@ resource "aws_lambda_function" "gif_generator_lambda" {
 
   environment {
     variables = {
-      AWS_REGION                = var.aws_region
-      ENVIRONMENT               = var.environment
-      OUTPUT_BUCKET_NAME        = var.output_bucket_name
-      PRESIGNED_URL_TTL_SECONDS = tostring(var.presigned_url_ttl_seconds)
+      AWS_REGION         = var.aws_region
+      ENVIRONMENT        = var.environment
+      OUTPUT_BUCKET_NAME = var.output_bucket_name
     }
   }
 

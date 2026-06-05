@@ -1,7 +1,7 @@
 variable "project_name" {
   description = "Назва проекту (використовується для іменування ресурсів)."
   type        = string
-  default     = "gif-generator"
+  default     = "devsecops-pipeline"
 
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]{2,31}$", var.project_name))
@@ -35,7 +35,6 @@ variable "environment_config" {
     api_throttling_burst_limit = number
     api_throttling_rate_limit  = number
     cors_allowed_origins       = list(string)
-    presigned_url_ttl_seconds  = number
   }))
 
   default = {
@@ -46,7 +45,6 @@ variable "environment_config" {
       api_throttling_burst_limit = 25
       api_throttling_rate_limit  = 50
       cors_allowed_origins       = ["*"]
-      presigned_url_ttl_seconds  = 1800
     }
     staging = {
       lambda_memory_size         = 1536
@@ -55,7 +53,6 @@ variable "environment_config" {
       api_throttling_burst_limit = 50
       api_throttling_rate_limit  = 100
       cors_allowed_origins       = ["*"]
-      presigned_url_ttl_seconds  = 3600
     }
     prod = {
       lambda_memory_size         = 2048
@@ -64,7 +61,6 @@ variable "environment_config" {
       api_throttling_burst_limit = 100
       api_throttling_rate_limit  = 200
       cors_allowed_origins       = ["*"]
-      presigned_url_ttl_seconds  = 3600
     }
   }
 
@@ -87,7 +83,7 @@ variable "lambda_timeout" {
 }
 
 variable "lambda_image_uri" {
-  description = "Full immutable ECR image URI for Lambda. CI passes a SHA-tagged image."
+  description = "Full immutable image URI for the Lambda workload."
   type        = string
   default     = ""
 }

@@ -1,15 +1,31 @@
-# AWS IAM Policy Guidance For GitHub Actions
+# AWS IAM Policy Guidance For The CLI-Managed Pipeline
 
-This project uses GitHub Actions OIDC to exchange a GitHub-issued identity
-token for short-lived AWS credentials. Do not store long-lived AWS access keys
-in GitHub secrets.
+DevSecOps Pipeline Kit uses the CLI as the setup and diagnostics surface, while
+GitHub Actions uses OIDC to exchange a GitHub-issued identity token for
+short-lived AWS credentials. Do not store long-lived AWS access keys in GitHub
+secrets.
+
+Use the CLI to render and validate repository setup:
+
+```bash
+devsecops github-setup --write
+devsecops gh-setup --apply \
+  --deploy-role-arn arn:aws:iam::<ACCOUNT_ID>:role/<DEPLOY_ROLE> \
+  --plan-role-arn arn:aws:iam::<ACCOUNT_ID>:role/<PLAN_ROLE>
+devsecops gh-doctor
+devsecops branch-doctor
+```
+
+Review IAM trust and permission policies manually before applying them. The CLI
+helps configure GitHub variables/secrets and diagnose repository state; it does
+not create AWS IAM roles for you.
 
 ## Recommended Roles
 
 | Role | Used by | Purpose |
 | --- | --- | --- |
 | `AWS_PLAN_ROLE_TO_ASSUME_ARN` | Pull request and manual plan workflows | Read Terraform state, acquire state lock, refresh resources, and produce plans. |
-| `AWS_ROLE_TO_ASSUME_ARN` | `push` to `main` deploy workflow | Apply Terraform, push ECR images, deploy frontend, and perform rollback. |
+| `AWS_ROLE_TO_ASSUME_ARN` | `push` to `main` deploy workflow | Apply Terraform, read configured images for optional scanning, and perform rollback. |
 
 Use separate roles where possible. The plan role should not be able to mutate
 workload resources beyond Terraform backend locking.
@@ -51,6 +67,15 @@ Replace placeholders with your account, owner, and repository names.
 For PR plans, create a separate trust policy scoped to the pull request subject
 patterns you are willing to trust. Be careful with public forks because PR code
 can modify workflow behavior.
+
+After creating the roles, run:
+
+```bash
+devsecops gh-setup --apply \
+  --deploy-role-arn arn:aws:iam::<ACCOUNT_ID>:role/<DEPLOY_ROLE> \
+  --plan-role-arn arn:aws:iam::<ACCOUNT_ID>:role/<PLAN_ROLE>
+devsecops gh-doctor
+```
 
 ## Backend Access
 
@@ -107,26 +132,22 @@ environment names are stable.
       "Resource": "*"
     },
     {
-      "Sid": "ECRPushAndRead",
+      "Sid": "ECRManageAndRead",
       "Effect": "Allow",
       "Action": [
         "ecr:BatchCheckLayerAvailability",
         "ecr:BatchGetImage",
-        "ecr:CompleteLayerUpload",
         "ecr:CreateRepository",
         "ecr:DeleteRepository",
         "ecr:DescribeImages",
         "ecr:DescribeRepositories",
         "ecr:GetDownloadUrlForLayer",
         "ecr:GetLifecyclePolicy",
-        "ecr:InitiateLayerUpload",
-        "ecr:PutImage",
         "ecr:PutImageScanningConfiguration",
         "ecr:PutImageTagMutability",
         "ecr:PutLifecyclePolicy",
         "ecr:TagResource",
-        "ecr:UntagResource",
-        "ecr:UploadLayerPart"
+        "ecr:UntagResource"
       ],
       "Resource": "arn:aws:ecr:<AWS_REGION>:<ACCOUNT_ID>:repository/<PROJECT_NAME>-*-lambda-repo"
     },
@@ -192,8 +213,15 @@ permissions as Terraform reports missing access.
 
 ## KMS Admin Role Name
 
-The Terraform variable `terraform_admin_role_name` is optional and defaults to
-an empty string. If you set it, the workload KMS key policy grants explicit key
-administration to that IAM role name in addition to account root delegation.
-Only set it to a role that already exists; otherwise AWS KMS can reject the key
-policy because of an invalid principal.
+The CLI exposes the Terraform variable `terraform_admin_role_name` through local
+config:
+
+```bash
+devsecops set terraform_admin_role_name <existing-role-name> --render
+```
+
+The variable is optional and defaults to an empty string. If you set it, the
+workload KMS key policy grants explicit key administration to that IAM role name
+in addition to account root delegation. Only set it to a role that already
+exists; otherwise AWS KMS can reject the key policy because of an invalid
+principal.

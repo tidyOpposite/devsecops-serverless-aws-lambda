@@ -44,18 +44,13 @@ variable "name_prefix" {
 }
 
 variable "output_bucket_arn" {
-  description = "ARN of the private output GIF bucket."
+  description = "ARN of the private workload data bucket."
   type        = string
 }
 
 variable "output_bucket_name" {
-  description = "Name of the private output GIF bucket."
+  description = "Name of the private workload data bucket."
   type        = string
-}
-
-variable "presigned_url_ttl_seconds" {
-  description = "TTL for generated S3 presigned URLs."
-  type        = number
 }
 
 variable "tags" {

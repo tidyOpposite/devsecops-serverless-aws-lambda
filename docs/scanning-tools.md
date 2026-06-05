@@ -1,43 +1,65 @@
 # Scanning Tool Rationale
 
-The stack intentionally uses overlapping scanners because each one sees a
-different layer of the system.
+The CLI is the product surface for enabling, explaining, and checking scanner
+gates. GitHub Actions runs the scanners, while `devsecops controls`,
+`devsecops readiness`, `devsecops preset`, and `devsecops render` help the
+operator choose and validate the active policy.
+
+The kit intentionally separates infrastructure scanning from workload source
+scanning. This repository owns the CLI-managed AWS deployment template;
+application source, dependencies, and image build hardening belong to the
+workload release process that publishes `LAMBDA_IMAGE_URI`.
 
 ## Selected Stack
 
 | Layer | Selected tool | Why |
 | --- | --- | --- |
-| SAST | Bandit | Focused Python security checks, low setup cost, good signal for Lambda code. |
-| SCA | Snyk | Commercial vulnerability intelligence, dependency and container coverage in the same workflow. |
-| IaC | Trivy config scan | One scanner covers Terraform misconfiguration and can also be used for container/IaC workflows. |
-| Container | Snyk Container plus ECR scan-on-push | CI gate before push plus AWS-native visibility after push. |
-| DAST | OWASP ZAP baseline | Mature passive HTTP scanning against the deployed API without requiring a full authenticated crawl. |
+| IaC | Trivy config scan | Fast Terraform misconfiguration checks with straightforward GitHub Actions integration and CLI readiness reporting. |
+| Container | Snyk Container | Optional deploy gate for known CVEs in the configured Lambda image. The CLI reports whether the gate can run based on config and secrets. |
+| DAST | OWASP ZAP baseline | Optional passive HTTP scanning against the deployed API. The CLI keeps it disabled until the operator opts in. |
 
-## Bandit vs Semgrep
+## CLI Controls
 
-| Criterion | Bandit | Semgrep |
-| --- | --- | --- |
-| Primary fit | Python-specific security linting. | Multi-language static analysis with custom rules. |
-| Setup complexity | Very low: `bandit -r lambda_function`. | Moderate: rule packs, configuration, and triage policy matter. |
-| Signal in this repo | High enough because the app is a small Python Lambda. | Useful if the repo grows into multiple services or custom rules. |
-| False-positive management | Simple severity filtering. | Better long-term policy controls, but needs maintenance. |
+Use the CLI to inspect and configure scanning posture:
 
-Decision: Bandit is the default because this reference workload is Python-only
-and small. Semgrep is a strong roadmap candidate when the project needs
-cross-language rules, framework-specific patterns, or custom organization
-policies.
+```bash
+devsecops controls
+devsecops explain dast
+devsecops preset strict --render
+devsecops set enable_dast true --render
+devsecops gh-doctor
+```
+
+`minimal` and `balanced` keep HTTP validation and DAST conservative by default.
+`strict` enables validation controls and is intended for workloads that already
+implement `/health` and can tolerate passive dynamic scanning.
+
+## Source SAST And SCA
+
+No sample Lambda application source code is included in this repository, so the
+CLI-managed pipeline does not run language-specific SAST or package SCA here.
+Add those checks in the repository that builds the Lambda image.
+
+Recommended workload gates:
+
+| Workload layer | Recommended gate |
+| --- | --- |
+| Source code | Semgrep, CodeQL, Bandit, or an equivalent scanner for the workload language. |
+| Dependencies | Snyk, Dependabot, pip-audit, npm audit, or ecosystem-specific SCA. |
+| Unit and integration tests | Workload-specific test suite before image publication. |
+| Image build | Reproducible build with pinned base image and no mutable production tags. |
 
 ## Trivy vs Checkov
 
 | Criterion | Trivy config | Checkov |
 | --- | --- | --- |
-| Coverage | Terraform, Kubernetes, Dockerfile, secrets, and images in one ecosystem. | Deep IaC policy coverage across Terraform, CloudFormation, Kubernetes, and more. |
+| Coverage | Terraform, Kubernetes, secrets, and images in one ecosystem. | Deep IaC policy coverage across Terraform, CloudFormation, Kubernetes, and more. |
 | CI ergonomics | Simple GitHub Action, fast config scan, consistent severity filters. | Strong policy framework, but usually more configuration and suppression governance. |
-| Fit for this repo | Good default because it already covers IaC and can align with container workflows. | Good alternative if the project needs policy-as-code libraries and compliance mapping. |
+| Fit for this repo | Good default because the repository currently needs a lightweight Terraform gate. | Good alternative if the project needs policy-as-code libraries and compliance mapping. |
 
-Decision: Trivy remains the IaC gate because the repo benefits from one
-lightweight scanner for config and container-adjacent checks. Checkov is a good
-addition if compliance reporting becomes a project goal.
+Decision: Trivy remains the IaC gate because the CLI benefits from a compact
+default scanner with simple operator messaging. Checkov is a good addition if
+compliance reporting becomes a product goal.
 
 ## OWASP ZAP vs Nuclei
 
@@ -47,16 +69,15 @@ addition if compliance reporting becomes a project goal.
 | Strength | Mature web app scanner, useful for headers, cookies, and common HTTP issues. | Fast, broad, and easy to extend with community templates. |
 | Risk | Can create noisy warnings if used as a hard gate without tuning. | Template quality and target relevance need governance. |
 
-Decision: OWASP ZAP is integrated first because the demo has a simple HTTP API
-and no authenticated flows. Nuclei is suitable as a follow-up for exposure and
-CVE templates.
+Decision: OWASP ZAP is optional because this kit does not define the workload
+routes. Enable it through the CLI when the deployed workload has an HTTP surface
+that is safe for a passive baseline scan.
 
 ## Gate Policy
 
 | Finding source | Gate behavior |
 | --- | --- |
-| Bandit high confidence/high severity | Fail CI. |
-| Snyk high/critical dependency or image vulnerability | Fail when `SNYK_TOKEN` is configured. |
+| Snyk high/critical image vulnerability | Fail deployment when `SNYK_TOKEN` is configured. |
 | Trivy high/critical IaC finding | Fail CI. |
-| OWASP ZAP fail-level result | Fail deployment validation and trigger Lambda rollback. |
+| OWASP ZAP fail-level result | Fail deployment validation and trigger Lambda rollback when `ENABLE_DAST=true`. |
 | OWASP ZAP warnings | Report but do not fail by default (`-I`) to avoid noisy rollback loops. |

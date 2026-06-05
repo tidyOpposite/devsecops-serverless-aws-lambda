@@ -9,7 +9,7 @@ output "execution_arn" {
 }
 
 output "health_url" {
-  description = "Health check URL served by Lambda through API Gateway."
+  description = "Optional health check URL for Lambda workloads that expose /health through API Gateway."
   value       = "${trimsuffix(aws_apigatewayv2_stage.default_stage.invoke_url, "/")}/health"
 }
 

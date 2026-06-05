@@ -54,41 +54,6 @@ moved {
 }
 
 moved {
-  from = aws_s3_bucket.frontend_bucket
-  to   = module.storage.aws_s3_bucket.frontend_bucket
-}
-
-moved {
-  from = aws_s3_bucket_versioning.frontend_bucket_versioning
-  to   = module.storage.aws_s3_bucket_versioning.frontend_bucket_versioning
-}
-
-moved {
-  from = aws_s3_bucket_policy.frontend_bucket_policy
-  to   = module.storage.aws_s3_bucket_policy.frontend_bucket_policy
-}
-
-moved {
-  from = aws_s3_bucket_server_side_encryption_configuration.frontend_bucket_sse
-  to   = module.storage.aws_s3_bucket_server_side_encryption_configuration.frontend_bucket_sse
-}
-
-moved {
-  from = aws_s3_bucket_website_configuration.frontend_website
-  to   = module.storage.aws_s3_bucket_website_configuration.frontend_website
-}
-
-moved {
-  from = aws_s3_bucket_public_access_block.frontend_bucket_pab
-  to   = module.storage.aws_s3_bucket_public_access_block.frontend_bucket_pab
-}
-
-moved {
-  from = aws_s3_bucket_logging.frontend_bucket_logging
-  to   = module.storage.aws_s3_bucket_logging.frontend_bucket_logging
-}
-
-moved {
   from = aws_ecr_repository.lambda_repo
   to   = module.ecr.aws_ecr_repository.lambda_repo
 }
@@ -111,11 +76,6 @@ moved {
 moved {
   from = aws_cloudwatch_log_group.lambda_log_group
   to   = module.lambda.aws_cloudwatch_log_group.lambda_log_group
-}
-
-moved {
-  from = aws_lambda_function.gif_generator_lambda
-  to   = module.lambda.aws_lambda_function.gif_generator_lambda
 }
 
 moved {

@@ -1,0 +1,12 @@
+[project]
+name = "devsecops-pipeline-cli"
+version = "0.1.0"
+description = "Interactive CLI for configuring the DevSecOps Lambda pipeline template."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+devsecops = "devsecops_cli:main"
+
+[tool.setuptools]
+py-modules = ["devsecops_cli"]

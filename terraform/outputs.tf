@@ -28,21 +28,6 @@ output "ecr_repository_url" {
   value       = module.ecr.repository_url
 }
 
-output "frontend_s3_bucket_name" {
-  description = "Name of the S3 bucket hosting the static frontend."
-  value       = module.storage.frontend_bucket_name
-}
-
-output "frontend_s3_website_endpoint" {
-  description = "Raw S3 website endpoint for the static frontend."
-  value       = module.storage.frontend_website_endpoint
-}
-
-output "frontend_s3_website_url" {
-  description = "HTTP URL for the static frontend."
-  value       = module.storage.frontend_website_url
-}
-
 output "kms_key_arn" {
   description = "ARN of the customer-managed KMS key used by workload resources."
   value       = module.kms.key_arn
@@ -69,6 +54,6 @@ output "log_s3_bucket_name" {
 }
 
 output "output_s3_bucket_name" {
-  description = "Name of the private S3 bucket for generated GIF files."
+  description = "Name of the private S3 bucket for workload data."
   value       = module.storage.output_bucket_name
 }
