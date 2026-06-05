@@ -397,6 +397,7 @@ curl "$(terraform output -raw api_gateway_health_url)"
 * [Scanning tool rationale](docs/scanning-tools.md)
 * [AWS cost estimation](docs/cost-estimation.md)
 * [Troubleshooting guide](docs/troubleshooting.md)
+* [Product roadmap](ROADMAP.md)
 * [AWS OIDC and IAM policy guidance](AWS_policy.md)
 * [Changelog](CHANGELOG.md)
 * [v0.2.0 release notes](docs/release-v0.2.0.md)
