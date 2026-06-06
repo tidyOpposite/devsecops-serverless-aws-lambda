@@ -1,0 +1,79 @@
+name: CLI and Terraform CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.10.5"
+  TF_IN_AUTOMATION: "true"
+  TF_WORKING_DIR: terraform
+
+jobs:
+  cli-tests:
+    name: CLI Unit, Golden, E2E, and Install Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run CLI test suite
+        run: PYTHONPATH=cli python -m unittest discover -s cli/tests
+
+      - name: Install root CLI package smoke test
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --no-deps --no-build-isolation .
+          devsecops --version
+
+  terraform-validate:
+    name: Terraform Format and Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install root CLI package
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --no-deps --no-build-isolation .
+          devsecops --version
+
+      - name: Render generated Terraform variables
+        run: |
+          devsecops config new --preset balanced --render
+          test -f "${TF_WORKING_DIR}/generated.auto.tfvars"
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform fmt check
+        run: terraform -chdir="${TF_WORKING_DIR}" fmt -check -recursive
+
+      - name: Terraform init without backend
+        run: terraform -chdir="${TF_WORKING_DIR}" init -backend=false -input=false -no-color
+
+      - name: Terraform validate
+        run: terraform -chdir="${TF_WORKING_DIR}" validate -no-color

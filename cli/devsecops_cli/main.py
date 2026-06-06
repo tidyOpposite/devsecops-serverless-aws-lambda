@@ -29,7 +29,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback guard
     tomllib = None  # type: ignore[assignment]
 
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 CONFIG_SCHEMA_VERSION = 1
 CONFIG_FILE = ".devsecops-pipeline.toml"
 EXIT_OK = 0
@@ -818,6 +818,10 @@ def hcl_value(value: Any) -> str:
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def hcl_attribute_line(key: str, value: Any, width: int) -> str:
+    return f"{key.ljust(width)} = {hcl_value(value)}"
+
+
 def cli_owned_comment(command: str) -> str:
     return "\n".join(
         [
@@ -836,19 +840,21 @@ def cli_owned_markdown_notice(command: str, artifact: str) -> str:
 
 
 def terraform_tfvars(cfg: dict[str, Any]) -> str:
-    lines = cli_owned_comment("devsecops render").splitlines() + [
-        "",
-        f'project_name = {hcl_value(cfg["project_name"])}',
-        f'aws_region = {hcl_value(cfg["aws_region"])}',
-        f'lambda_image_uri = {hcl_value(cfg["lambda_image_uri"])}',
-        f'terraform_admin_role_name = {hcl_value(cfg["terraform_admin_role_name"])}',
-        "",
-        "environment_config = {",
+    top_level = [
+        ("project_name", cfg["project_name"]),
+        ("aws_region", cfg["aws_region"]),
+        ("lambda_image_uri", cfg["lambda_image_uri"]),
+        ("terraform_admin_role_name", cfg["terraform_admin_role_name"]),
     ]
+    top_level_width = max(len(key) for key, _ in top_level)
+    environment_width = max(len(key) for env_cfg in cfg["environments"].values() for key in env_cfg)
+    lines = cli_owned_comment("devsecops render").splitlines() + [""]
+    lines.extend(hcl_attribute_line(key, value, top_level_width) for key, value in top_level)
+    lines.extend(["", "environment_config = {"])
     for env_name, env_cfg in cfg["environments"].items():
         lines.append(f"  {env_name} = {{")
         for key, value in env_cfg.items():
-            lines.append(f"    {key} = {hcl_value(value)}")
+            lines.append(f"    {hcl_attribute_line(key, value, environment_width)}")
         lines.append("  }")
     lines.append("}")
     lines.append("")

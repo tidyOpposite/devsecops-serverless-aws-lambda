@@ -7,6 +7,27 @@ semantic versioning.
 
 No unreleased changes.
 
+## v0.4.0 - 2026-06-06
+
+### Added
+
+* Golden tests for generated Terraform tfvars, GitHub variable files, and
+  GitHub setup scripts.
+* End-to-end CLI test that runs `config new`, `config validate`, `render`, and
+  `report` in a temporary repository.
+* Root package install smoke test that verifies the `devsecops` console
+  command.
+* Mocked failure tests for missing `gh`, missing AWS credentials, unavailable
+  Terraform, and snapshot rollback safety for CLI-owned versus user-owned
+  files.
+* CI workflow for CLI tests plus generated Terraform `fmt`, `init`, and
+  `validate` checks.
+
+### Changed
+
+* Generated `terraform/generated.auto.tfvars` now uses Terraform fmt-compatible
+  attribute alignment.
+
 ## v0.3.0 - 2026-06-06
 
 ### Removed

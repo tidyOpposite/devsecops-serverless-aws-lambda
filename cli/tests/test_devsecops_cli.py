@@ -10,6 +10,38 @@ from pathlib import Path
 from unittest.mock import patch
 
 cli = importlib.import_module("devsecops_cli.main")
+GOLDEN_DIR = Path(__file__).with_name("golden")
+RENDERED_ARTIFACTS = [
+    cli.GENERATED_TFVARS,
+    cli.DIST_DIR / "backend.tf",
+    cli.DIST_DIR / "github-variables.env",
+    cli.DIST_DIR / "github-setup.sh",
+    cli.DIST_DIR / "setup-checklist.md",
+]
+
+
+def golden_config() -> dict[str, object]:
+    cfg = cli.preset_config("strict")
+    cfg["project_name"] = "golden-pipeline"
+    cfg["aws_region"] = "eu-central-1"
+    cfg["lambda_image_uri"] = "123456789012.dkr.ecr.eu-central-1.amazonaws.com/golden-pipeline:sha-abc123"
+    cfg["terraform_admin_role_name"] = "golden-terraform-admin"
+    cfg["backend"] = {
+        "bucket": "golden-pipeline-tfstate",
+        "key": "golden-pipeline/terraform.tfstate",
+        "region": "eu-central-1",
+        "lock_table": "golden-pipeline-locks",
+        "workspace_key_prefix": "envs",
+    }
+    return cfg
+
+
+def read_golden(name: str) -> str:
+    return (GOLDEN_DIR / name).read_text(encoding="utf-8")
+
+
+def rendered_artifact_contents(root: Path) -> dict[str, str]:
+    return {str(path): (root / path).read_text(encoding="utf-8") for path in RENDERED_ARTIFACTS}
 
 
 class DevSecOpsCliTests(unittest.TestCase):
@@ -123,6 +155,37 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertEqual(first_config, second_config)
         self.assertEqual(first_tfvars, second_tfvars)
 
+    def test_rendered_artifacts_have_stable_diffs_across_repeated_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, golden_config())
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.run_render(root, snapshot=False), 0)
+            first = rendered_artifact_contents(root)
+
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.run_render(root, snapshot=False), 0)
+            second = rendered_artifact_contents(root)
+
+        self.assertEqual(first, second)
+
+    def test_e2e_config_validate_render_report_in_temp_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(cli, "repo_root", return_value=root):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.main(["config", "new", "--preset", "balanced"]), 0)
+                    self.assertEqual(cli.main(["config", "validate"]), 0)
+                    self.assertEqual(cli.main(["render"]), 0)
+                    self.assertEqual(cli.main(["report"]), 0)
+
+            self.assertTrue((root / cli.CONFIG_FILE).exists())
+            self.assertTrue((root / cli.GENERATED_TFVARS).exists())
+            self.assertTrue((root / cli.DIST_DIR / "github-setup.sh").exists())
+            report = root / cli.DIST_DIR / "readiness-report.md"
+            self.assertTrue(report.exists())
+            self.assertIn("# DevSecOps Pipeline Readiness Report", report.read_text(encoding="utf-8"))
+
     def test_nested_set_and_parse(self) -> None:
         cfg = cli.default_config()
         current = cli.nested_get(cfg, "environments.dev.lambda_timeout")
@@ -147,9 +210,17 @@ class DevSecOpsCliTests(unittest.TestCase):
     def test_tfvars_contains_environment_config(self) -> None:
         rendered = cli.terraform_tfvars(cli.default_config())
         self.assertIn("CLI-owned generated file", rendered)
-        self.assertIn('project_name = "devsecops-pipeline"', rendered)
+        self.assertIn('project_name              = "devsecops-pipeline"', rendered)
         self.assertIn("environment_config = {", rendered)
         self.assertIn("prod = {", rendered)
+
+    def test_generated_terraform_tfvars_matches_golden_fixture(self) -> None:
+        self.assertEqual(cli.terraform_tfvars(golden_config()), read_golden("terraform_generated.auto.tfvars.golden"))
+
+    def test_generated_github_artifacts_match_golden_fixtures(self) -> None:
+        cfg = golden_config()
+        self.assertEqual(cli.github_variables(cfg), read_golden("github-variables.env"))
+        self.assertEqual(cli.github_setup_script(cfg), read_golden("github-setup.sh"))
 
     def test_generated_artifacts_carry_cli_owned_notice(self) -> None:
         cfg = cli.default_config()
@@ -281,6 +352,15 @@ class DevSecOpsCliTests(unittest.TestCase):
 
         self.assertEqual(result, cli.EXIT_MISSING_EXTERNAL_TOOL)
 
+    def test_collect_github_checks_warns_when_gh_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(cli, "command_exists", return_value=False):
+                checks = cli.collect_github_checks(Path(tmpdir), cli.default_config())
+
+        by_name = {check.name: check for check in checks}
+        self.assertEqual(by_name["GitHub CLI"].status, "WARN")
+        self.assertIn("`gh` not found", by_name["GitHub CLI"].detail)
+
     def test_readiness_score_weights_warn_as_half_credit(self) -> None:
         checks = [
             cli.Check("one", "OK", "ok"),
@@ -321,6 +401,25 @@ class DevSecOpsCliTests(unittest.TestCase):
 
         self.assertEqual(result, cli.EXIT_VALIDATION_FAILED)
         self.assertIn("dev.lambda_timeout", buffer.getvalue())
+
+    def test_doctor_local_strict_reports_unavailable_terraform_as_missing_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.default_config())
+
+            def fake_command_exists(name: str) -> bool:
+                return name not in {"git", "terraform", "aws"}
+
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "command_exists", side_effect=fake_command_exists):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["doctor", "local", "--strict", "--format", "json"])
+
+        payload = json.loads(buffer.getvalue())
+        terraform_check = next(check for check in payload["checks"] if check["name"] == "`terraform` CLI")
+        self.assertEqual(result, cli.EXIT_MISSING_EXTERNAL_TOOL)
+        self.assertEqual(terraform_check["status"], "FAIL")
+        self.assertIn("Not found on PATH", terraform_check["detail"])
 
     def test_preset_strict_enables_validation_controls(self) -> None:
         cfg = cli.preset_config("strict")
@@ -614,6 +713,24 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertEqual(checks[0].status, "WARN")
         self.assertTrue(any(check.name == "Lambda function" and check.status == "WARN" for check in checks))
 
+    def test_collect_aws_checks_warns_when_credentials_are_missing(self) -> None:
+        def fake_run_command(command: list[str], root: Path, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(command, 255, stdout="", stderr="Unable to locate credentials")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(cli, "command_exists", side_effect=lambda name: name == "aws"), patch.object(
+                cli,
+                "run_command",
+                side_effect=fake_run_command,
+            ):
+                checks = cli.collect_aws_checks(Path(tmpdir), cli.default_config(), env_name="prod")
+
+        by_name = {check.name: check for check in checks}
+        self.assertEqual(by_name["AWS CLI"].status, "OK")
+        self.assertEqual(by_name["AWS identity"].status, "WARN")
+        self.assertIn("Unable to locate credentials", by_name["AWS identity"].detail)
+        self.assertIn("without valid AWS credentials", by_name["State bucket"].detail)
+
     def test_collect_aws_checks_successful_resources(self) -> None:
         cfg = cli.default_config()
         cfg["backend"]["bucket"] = "state-bucket"
@@ -735,6 +852,23 @@ class DevSecOpsCliTests(unittest.TestCase):
             restored = cli.load_config(root)
             self.assertEqual(restored["project_name"], "before-app")
 
+    def test_snapshot_restore_reverts_overwritten_cli_owned_generated_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, golden_config())
+            with redirect_stdout(io.StringIO()):
+                cli.run_render(root, snapshot=False)
+            original_tfvars = (root / cli.GENERATED_TFVARS).read_text(encoding="utf-8")
+
+            snapshot_path = cli.create_snapshot(root, "render", "Before generated overwrite")
+            snapshot = cli.read_snapshot_manifest(snapshot_path)
+            snapshot["_path"] = str(snapshot_path)
+
+            (root / cli.GENERATED_TFVARS).write_text('project_name = "manually-overwritten"\n', encoding="utf-8")
+            cli.restore_snapshot(root, snapshot)
+
+            self.assertEqual((root / cli.GENERATED_TFVARS).read_text(encoding="utf-8"), original_tfvars)
+
     def test_snapshot_restore_removes_file_created_after_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -751,6 +885,20 @@ class DevSecOpsCliTests(unittest.TestCase):
 
             cli.restore_snapshot(root, snapshot)
             self.assertFalse(generated.exists())
+
+    def test_snapshot_restore_does_not_overwrite_user_owned_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            unmanaged = root / "README.md"
+            unmanaged.write_text("user version before snapshot\n", encoding="utf-8")
+            snapshot_path = cli.create_snapshot(root, "render", "Before generated files")
+            snapshot = cli.read_snapshot_manifest(snapshot_path)
+            snapshot["_path"] = str(snapshot_path)
+
+            unmanaged.write_text("user version after snapshot\n", encoding="utf-8")
+            cli.restore_snapshot(root, snapshot)
+
+            self.assertEqual(unmanaged.read_text(encoding="utf-8"), "user version after snapshot\n")
 
     def test_snapshot_restore_ignores_paths_outside_cli_allowlist(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

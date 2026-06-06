@@ -89,8 +89,6 @@ Acceptance criteria:
 
 ## Milestone 1: Clean Configuration Workflow
 
-Target release: `v0.3.0`.
-Status: implemented in `Unreleased`.
 
 Problem: `init`, `set`, `preset`, `compose`, `validate-config`, and `render`
 are useful, but the clean configuration lifecycle is implicit.
@@ -109,83 +107,83 @@ devsecops render
 
 Deliverables:
 
-- [x] Add a `schema_version` field to `.devsecops-pipeline.toml`.
-- [x] Add deterministic clean-config generation with no secrets and no generated
+* Add a `schema_version` field to `.devsecops-pipeline.toml`.
+* Add deterministic clean-config generation with no secrets and no generated
   output mixed into source configuration.
-- [x] Add `config new`, `config reset`, `config diff`, and `config schema`.
-- [x] Keep existing commands working while steering users toward the grouped
+* Add `config new`, `config reset`, `config diff`, and `config schema`.
+* Keep existing commands working while steering users toward the grouped
   `config` workflow.
-- [x] Add idempotency tests for clean config generation and rendering.
-- [x] Add a migration scaffold for future config schema versions.
+* Add idempotency tests for clean config generation and rendering.
+* Add a migration scaffold for future config schema versions.
 
 Acceptance criteria:
 
-- [x] A clean config can be generated non-interactively.
-- [x] Running config generation and render twice produces no unexpected diff.
-- [x] Validation catches bad values before Terraform or GitHub commands run.
-- [x] No AWS secrets, GitHub secrets, tokens, or credentials are written to the
+* A clean config can be generated non-interactively.
+* Running config generation and render twice produces no unexpected diff.
+* Validation catches bad values before Terraform or GitHub commands run.
+* No AWS secrets, GitHub secrets, tokens, or credentials are written to the
   local config.
 
 ## Milestone 2: CLI UX Consolidation
 
-Target release: `v0.4.0`.
-Status: implemented in `Unreleased`.
+Target release: `v0.3.0`.
 
 Problem: the command surface is powerful but too wide for a first-time user.
 
 Planned improvements:
 
-- [x] Organize commands into clear groups:
+* Organize commands into clear groups:
   * `config`: create, show, set, validate, diff, reset, schema.
   * `render`: generate Terraform and GitHub helper artifacts.
   * `doctor`: local, GitHub, AWS, branch, actions, and deep diagnostics.
   * `terraform`: plan and bootstrap helpers.
   * `github`: setup and status helpers.
   * `snapshot`: list, inspect, and restore CLI-managed files.
-- [x] Keep top-level compatibility aliases where useful, but mark legacy aliases in
+* Keep top-level compatibility aliases where useful, but mark legacy aliases in
   help output.
-- [x] Standardize output modes: human, compact, and JSON where automation needs it.
-- [x] Define stable exit codes for validation failure, missing external tools,
+* Standardize output modes: human, compact, and JSON where automation needs it.
+* Define stable exit codes for validation failure, missing external tools,
   authentication failure, and unexpected runtime errors.
-- [x] Improve `devsecops menu` so it follows the same command groups.
+* Improve `devsecops menu` so it follows the same command groups.
 
 Acceptance criteria:
 
-- [x] `devsecops --help` is short enough to scan.
-- [x] Every command has an example in help or documentation.
-- [x] JSON output exists for readiness and doctor workflows used by automation.
-- [x] Golden tests protect important help text and command output.
+* `devsecops --help` is short enough to scan.
+* Every command has an example in help or documentation.
+* JSON output exists for readiness and doctor workflows used by automation.
+* Golden tests protect important help text and command output.
 
 ## Milestone 3: Trustworthy Generation And Tests
 
-Target release: `v0.5.0`.
+Target release: `v0.4.0`.
+Status: implemented in `v0.4.0`.
 
 Problem: a CLI that generates infrastructure files must prove that generation
 is deterministic, reviewable, and valid.
 
 Deliverables:
 
-* Golden tests for generated `terraform/generated.auto.tfvars`.
-* Golden tests for generated GitHub setup scripts and variable files.
-* Terraform formatting and validation checks in CI.
-* CLI install smoke test from the root package.
-* End-to-end test that runs `config new`, `validate`, `render`, and `report`
+- [x] Golden tests for generated `terraform/generated.auto.tfvars`.
+- [x] Golden tests for generated GitHub setup scripts and variable files.
+- [x] Terraform formatting and validation checks in CI.
+- [x] CLI install smoke test from the root package.
+- [x] End-to-end test that runs `config new`, `validate`, `render`, and `report`
   in a temporary repository.
-* Mocked tests for missing `gh`, missing AWS credentials, and unavailable
+- [x] Mocked tests for missing `gh`, missing AWS credentials, and unavailable
   Terraform.
-* Snapshot and rollback tests for overwritten CLI-owned files.
+- [x] Snapshot and rollback tests for overwritten CLI-owned files.
 
 Acceptance criteria:
 
-* Generated artifacts have stable diffs across repeated runs.
-* CI fails if generated Terraform is syntactically invalid.
-* A package install smoke test proves the `devsecops` console command works.
-* Rollback tests prove user-owned files are not restored or overwritten by
+- [x] Generated artifacts have stable diffs across repeated runs.
+- [x] CI fails if generated Terraform is syntactically invalid.
+- [x] A package install smoke test proves the `devsecops` console command works.
+- [x] Rollback tests prove user-owned files are not restored or overwritten by
   mistake.
 
 ## Milestone 4: First Successful Pipeline Path
 
-Target release: `v0.6.0`.
+Target release: `v0.5.0`.
 
 Problem: users need a direct, measurable route from install to one successful
 pipeline run.
@@ -212,7 +210,7 @@ Acceptance criteria:
 
 ## Milestone 5: Operational Reliability
 
-Target release: `v0.7.0`.
+Target release: `v0.6.0`.
 
 Problem: the project should help users operate the pipeline after initial
 setup, not only generate it.
@@ -237,7 +235,7 @@ Acceptance criteria:
 
 ## Milestone 6: Security And Policy Maturity
 
-Target release: `v0.8.0`.
+Target release: `v0.7.0`.
 
 Problem: security controls should be visible as product features, not just
 Terraform or workflow details.
@@ -261,7 +259,7 @@ Acceptance criteria:
 
 ## Milestone 7: Distribution And Adoption Readiness
 
-Target release: `v0.9.0`.
+Target release: `v0.8.0`.
 
 Problem: users should be able to install, upgrade, and trust releases without
 reading the source tree.
