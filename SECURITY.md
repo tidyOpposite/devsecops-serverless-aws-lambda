@@ -8,7 +8,9 @@ mapping live in [docs/security-model.md](docs/security-model.md).
 
 | Version | Supported |
 | --- | --- |
-| `v0.1.x` | Yes |
+| `v0.3.x` | Yes |
+| `v0.2.x` | No |
+| `v0.1.x` | No |
 
 ## Reporting A Vulnerability
 

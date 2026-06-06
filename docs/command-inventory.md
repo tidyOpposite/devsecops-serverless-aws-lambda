@@ -35,41 +35,111 @@ Use `devsecops menu` when you prefer the interactive path.
 | --- | --- | --- | --- |
 | `devsecops menu` | Stable | Interactive CLI | Opens the main terminal menu. Default command when no subcommand is passed. |
 | `devsecops init` | Alias | Configuration | Legacy interactive entry point for creating or updating `.devsecops-pipeline.toml`. Prefer `devsecops config new` for clean non-interactive config generation. |
-| `devsecops readiness` | Stable | Diagnostics | Shows scored readiness gaps and concrete next actions. |
+| `devsecops readiness` | Stable | Diagnostics | Shows scored readiness gaps and concrete next actions. Supports `--format human\|compact\|json`. |
 | `devsecops render` | Stable | Generation | Writes CLI-owned Terraform and GitHub helper artifacts. |
 | `devsecops report` | Stable | Reporting | Writes a CLI-owned Markdown readiness report. |
 | `devsecops dashboard` | Stable | Diagnostics | Prints a one-screen readiness dashboard. |
-| `devsecops doctor` | Stable | Diagnostics | Checks local readiness. `--deep` adds external Terraform/AWS checks and may vary by installed tools. |
+| `devsecops doctor` | Stable | Diagnostics | Primary diagnostics group for local, GitHub, AWS, branch, Actions, and all-in-one checks. |
+| `devsecops doctor local` | Stable | Diagnostics | Checks local readiness. `--deep` adds external Terraform/AWS checks and may vary by installed tools. |
+| `devsecops doctor github` | Stable | GitHub | Checks GitHub CLI, repository variables, and repository secrets. |
+| `devsecops doctor aws` | Stable | AWS | Checks AWS identity, backend, and deployed resources. |
+| `devsecops doctor branch` | Stable | GitHub | Checks branch protection and required checks. |
+| `devsecops doctor actions` | Stable | GitHub | Shows recent GitHub Actions runs and failed job summaries. |
+| `devsecops doctor all` | Stable | Diagnostics | Runs local, GitHub, branch, and AWS checks together. |
 | `devsecops validate-config` | Alias | Configuration | Compatibility command for `devsecops config validate`. |
-| `devsecops set` | Stable | Configuration | Sets one local config key. Use `--render` to regenerate artifacts after the update. |
+| `devsecops set` | Alias | Configuration | Compatibility alias for `devsecops config set`. |
 | `devsecops config` | Alias | Configuration | Compatibility shorthand for `devsecops config show`. |
 | `devsecops config show` | Stable | Configuration | Prints the current local source config as TOML or normalized JSON. |
 | `devsecops config new` | Stable | Configuration | Creates a clean schema-versioned config from a preset. Refuses to overwrite unless `--force` is passed. |
 | `devsecops config validate` | Stable | Configuration | Validates the local source config before Terraform or GitHub commands run. |
 | `devsecops config diff` | Stable | Configuration | Shows canonical TOML drift or compares the current config against a preset. |
 | `devsecops config reset` | Stable | Configuration | Resets local source config to a clean preset after taking a snapshot. |
+| `devsecops config set` | Stable | Configuration | Sets one local config key. Prefer this over the legacy top-level `set` alias. |
 | `devsecops config schema` | Stable | Configuration | Prints the config schema contract as JSON or Markdown. |
 | `devsecops preset list` | Stable | Configuration | Lists policy presets. |
 | `devsecops preset show <name>` | Stable | Configuration | Prints a preset summary. |
 | `devsecops preset apply <name>` | Stable | Configuration | Applies a preset while preserving user-specific identity values. |
 | `devsecops preset <name>` | Alias | Configuration | Backward-compatible shorthand for `devsecops preset apply <name>`. |
 | `devsecops compose` | Experimental | Configuration | Interactive control picker that writes config, artifacts, and a report in one pass. |
-| `devsecops snapshots` | Stable | Recovery | Lists or inspects local snapshots of CLI-owned files. |
-| `devsecops rollback` | Stable | Recovery | Restores local CLI-owned files from a snapshot. This is not the cloud Lambda deployment rollback. |
-| `devsecops github-setup` | Stable | GitHub | Prints, writes, or applies GitHub variable/secret setup commands through `gh`. |
+| `devsecops snapshot` | Stable | Recovery | Primary snapshot group for list, show, and restore workflows. |
+| `devsecops snapshot list` | Stable | Recovery | Lists local snapshots of CLI-owned files. |
+| `devsecops snapshot show` | Stable | Recovery | Shows snapshot details and changes since the snapshot. |
+| `devsecops snapshot restore` | Stable | Recovery | Restores local CLI-owned files from a snapshot. This is not the cloud Lambda deployment rollback. |
+| `devsecops snapshots` | Alias | Recovery | Compatibility alias for snapshot listing and inspection. |
+| `devsecops rollback` | Alias | Recovery | Compatibility alias for `devsecops snapshot restore`. |
+| `devsecops github` | Stable | GitHub | Primary GitHub group for setup, status, branch, and GitHub doctor workflows. |
+| `devsecops github setup` | Stable | GitHub | Prints, writes, or applies GitHub variable/secret setup commands through `gh`. |
+| `devsecops github status` | Stable | GitHub | Shows recent GitHub Actions runs and failed job summaries. |
+| `devsecops github branch` | Stable | GitHub | Checks branch protection and required checks. |
+| `devsecops github doctor` | Stable | GitHub | Checks GitHub CLI, variables, and secrets. |
+| `devsecops github-setup` | Alias | GitHub | Compatibility alias for `devsecops github setup`. |
 | `devsecops gh-setup` | Alias | GitHub | Alias for `devsecops github-setup`. |
-| `devsecops gh-doctor` | Stable | GitHub | Checks GitHub CLI, repository variables, and repository secrets. |
-| `devsecops actions-status` | Stable | GitHub | Shows recent GitHub Actions runs and failed job summaries. |
+| `devsecops gh-doctor` | Alias | GitHub | Compatibility alias for `devsecops doctor github`. |
+| `devsecops actions-status` | Alias | GitHub | Compatibility alias for `devsecops doctor actions`. |
 | `devsecops gh-status` | Alias | GitHub | Compatibility name for `devsecops actions-status`. |
-| `devsecops branch-doctor` | Stable | GitHub | Checks branch protection and required checks. |
-| `devsecops aws-doctor` | Experimental | AWS | Checks AWS identity, backend, and deployed resources. Output may evolve as AWS diagnostics mature. |
-| `devsecops plan <env>` | Experimental | Terraform | Convenience wrapper for Terraform plan against an environment workspace. |
-| `devsecops bootstrap` | Experimental | Terraform | Plans or applies the Terraform backend bootstrap stack. Mutates AWS only with `--apply`. |
+| `devsecops branch-doctor` | Alias | GitHub | Compatibility alias for `devsecops doctor branch`. |
+| `devsecops aws-doctor` | Alias | AWS | Compatibility alias for `devsecops doctor aws`. |
+| `devsecops terraform` | Stable | Terraform | Primary Terraform group for plan and backend bootstrap helpers. |
+| `devsecops terraform plan <env>` | Experimental | Terraform | Convenience wrapper for Terraform plan against an environment workspace. |
+| `devsecops terraform bootstrap` | Experimental | Terraform | Plans or applies the Terraform backend bootstrap stack. Mutates AWS only with `--apply`. |
+| `devsecops plan <env>` | Alias | Terraform | Compatibility alias for `devsecops terraform plan <env>`. |
+| `devsecops bootstrap` | Alias | Terraform | Compatibility alias for `devsecops terraform bootstrap`. |
 | `devsecops envs` | Support | Inspection | Prints environment settings. |
 | `devsecops controls` | Support | Inspection | Prints the security controls matrix. |
 | `devsecops architecture` | Support | Inspection | Prints the architecture tree. |
 | `devsecops explain [topic]` | Support | Inspection | Explains a pipeline security control. |
 | `devsecops tui` | Experimental | UI | Optional Rich/Textual UI bridge. Requires installing optional dependencies. |
+
+## Examples
+
+| Workflow | Example |
+| --- | --- |
+| Interactive menu | `devsecops menu` |
+| Dashboard | `devsecops dashboard --mode compact` |
+| Clean config | `devsecops config new --preset balanced` |
+| Show config | `devsecops config show --format json` |
+| Validate config | `devsecops config validate` |
+| Diff config | `devsecops config diff --preset strict` |
+| Set config | `devsecops config set backend.bucket my-state-bucket --render` |
+| Reset config | `devsecops config reset --preset minimal` |
+| Config schema | `devsecops config schema --format markdown` |
+| Render artifacts | `devsecops render` |
+| Readiness | `devsecops readiness --format json` |
+| Local doctor | `devsecops doctor local --deep --format compact` |
+| GitHub doctor | `devsecops doctor github --format json` |
+| AWS doctor | `devsecops doctor aws --environment prod --strict` |
+| Branch doctor | `devsecops doctor branch --branch main` |
+| Actions status | `devsecops doctor actions --format compact` |
+| All diagnostics | `devsecops doctor all --format json` |
+| GitHub setup | `devsecops github setup --write` |
+| GitHub status | `devsecops github status --format json` |
+| GitHub branch | `devsecops github branch --branch main` |
+| Terraform plan | `devsecops terraform plan dev --create-workspace` |
+| Terraform bootstrap | `devsecops terraform bootstrap --apply` |
+| Snapshot list | `devsecops snapshot list --format json` |
+| Snapshot show | `devsecops snapshot show 1` |
+| Snapshot restore | `devsecops snapshot restore --last --dry-run` |
+| Preset list | `devsecops preset list` |
+| Preset show | `devsecops preset show strict` |
+| Preset apply | `devsecops preset apply strict --render` |
+| Composer | `devsecops compose` |
+| Environment table | `devsecops envs` |
+| Controls matrix | `devsecops controls` |
+| Architecture tree | `devsecops architecture` |
+| Explain control | `devsecops explain oidc` |
+| Optional TUI | `devsecops tui` |
+| Legacy init alias | `devsecops init --defaults` |
+| Legacy set alias | `devsecops set backend.bucket my-state-bucket --render` |
+| Legacy validate alias | `devsecops validate-config` |
+| Legacy GitHub setup alias | `devsecops github-setup --write` |
+| Legacy GitHub doctor alias | `devsecops gh-doctor` |
+| Legacy AWS doctor alias | `devsecops aws-doctor --environment prod` |
+| Legacy Actions alias | `devsecops actions-status` |
+| Legacy branch alias | `devsecops branch-doctor --branch main` |
+| Legacy Terraform plan alias | `devsecops plan dev --create-workspace` |
+| Legacy Terraform bootstrap alias | `devsecops bootstrap --apply` |
+| Legacy snapshot alias | `devsecops snapshots --show 1` |
+| Legacy rollback alias | `devsecops rollback --last --dry-run` |
 
 ## Product Boundary
 
@@ -80,3 +150,14 @@ execution layers that operators can inspect directly.
 Commands that mutate local files create snapshots where appropriate. Commands
 that mutate GitHub or AWS require explicit flags such as `--apply` and should
 be reviewed before use in production.
+
+## Exit Codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Command completed successfully. |
+| `1` | Validation failed or the requested local selection was invalid. |
+| `2` | Required external tool is missing. |
+| `3` | External authentication is missing or invalid. |
+| `70` | Unexpected runtime error. |
+| `130` | Command was interrupted. |

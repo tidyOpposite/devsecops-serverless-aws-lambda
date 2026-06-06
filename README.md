@@ -150,39 +150,55 @@ devsecops dashboard     # full terminal dashboard with readiness categories
 devsecops dashboard --mode compact
 devsecops dashboard --watch --interval 10
 devsecops tui           # optional Rich/Textual UI bridge
+
 devsecops config new --preset balanced # create clean local source config
 devsecops config show --format toml
 devsecops config show --format json
 devsecops config validate
 devsecops config diff
 devsecops config diff --preset strict
+devsecops config set backend.bucket my-state-bucket --render
 devsecops config reset --preset minimal
 devsecops config schema
-devsecops init          # legacy interactive setup wizard
-devsecops compose       # choose controls and generate config/artifacts/report
+
 devsecops preset list   # show available policy profiles
 devsecops preset show strict
 devsecops preset apply strict --render
-devsecops doctor        # readiness report
+
+devsecops doctor local --format compact
+devsecops doctor local --deep --format json
+devsecops doctor github
+devsecops doctor aws --environment prod --strict
+devsecops doctor branch --branch main
+devsecops doctor actions --format json
+devsecops doctor all --format compact
 devsecops readiness     # shows what blocks 100% readiness
-devsecops doctor --deep # includes Terraform validate and AWS resource checks
+devsecops readiness --format json
+
+devsecops github setup  # prints gh commands for repo variables/secrets
+devsecops github setup --apply --deploy-role-arn arn:aws:iam::123456789012:role/deploy
+devsecops github status --format compact
+devsecops github branch --branch main
+
+devsecops terraform bootstrap
+devsecops terraform bootstrap --apply
+devsecops terraform plan dev --create-workspace
+
+devsecops snapshot list
+devsecops snapshot show 1
+devsecops snapshot restore --last --dry-run
+
 devsecops envs          # environment settings table
 devsecops controls      # security controls matrix
 devsecops render        # writes ignored Terraform/GitHub helper artifacts
 devsecops report        # exports Markdown readiness report
-devsecops snapshots     # lists local restore snapshots
-devsecops rollback --last --dry-run # previews rollback to the newest snapshot
-devsecops github-setup  # prints gh commands for repo variables/secrets
-devsecops gh-setup --apply --deploy-role-arn arn:aws:iam::123456789012:role/deploy
-devsecops gh-doctor     # checks GitHub variables/secrets through gh
-devsecops aws-doctor    # checks AWS identity, backend, and deployed resources
-devsecops gh-status     # shows recent GitHub Actions runs
-devsecops actions-status # shows recent runs and failed jobs
-devsecops branch-doctor # checks main branch protection
-devsecops set backend.bucket my-state-bucket --render
-devsecops plan dev --create-workspace
 devsecops explain oidc  # explains a security control
 ```
+
+Top-level compatibility aliases such as `init`, `set`, `validate-config`,
+`github-setup`, `gh-doctor`, `aws-doctor`, `actions-status`, `branch-doctor`,
+`plan`, `bootstrap`, `snapshots`, and `rollback` still work. New scripts should
+prefer the grouped commands shown above.
 
 The dashboard splits readiness into Local, Terraform, GitHub, AWS, Security,
 and Deployment scores. `--mode compact` keeps the view short; `--watch`
@@ -432,6 +448,7 @@ curl "$(terraform output -raw api_gateway_health_url)"
 * [Generated artifacts](docs/generated-artifacts.md)
 * [AWS OIDC and IAM policy guidance](AWS_policy.md)
 * [Changelog](CHANGELOG.md)
+* [v0.3.0 release notes](docs/release-v0.3.0.md)
 * [v0.2.0 release notes](docs/release-v0.2.0.md)
 * [v0.1.0 release notes](docs/release-v0.1.0.md)
 

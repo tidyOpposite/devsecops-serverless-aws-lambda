@@ -29,9 +29,15 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback guard
     tomllib = None  # type: ignore[assignment]
 
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 CONFIG_SCHEMA_VERSION = 1
 CONFIG_FILE = ".devsecops-pipeline.toml"
+EXIT_OK = 0
+EXIT_VALIDATION_FAILED = 1
+EXIT_MISSING_EXTERNAL_TOOL = 2
+EXIT_AUTH_FAILED = 3
+EXIT_UNEXPECTED_ERROR = 70
+EXIT_INTERRUPTED = 130
 DIST_DIR = Path("dist/devsecops")
 GENERATED_TFVARS = Path("terraform/generated.auto.tfvars")
 SNAPSHOT_DIR = Path(".devsecops/snapshots")
@@ -2287,6 +2293,105 @@ def print_checks(checks: list[Check]) -> None:
         print(f"{check.name.ljust(name_width)} {label.ljust(12)} {check.detail}")
 
 
+def check_to_dict(check: Check) -> dict[str, Any]:
+    return {
+        "name": check.name,
+        "status": check.status,
+        "detail": check.detail,
+        "scored": check.scored,
+    }
+
+
+def readiness_breakdown_dicts(checks: list[Check]) -> list[dict[str, Any]]:
+    rows = readiness_breakdown_rows(checks, compact=False)
+    return [
+        {
+            "area": row[0],
+            "score": int(row[1].rstrip("%")) if row[1].endswith("%") else None,
+            "ok": int(row[2]),
+            "warn": int(row[3]),
+            "fail": int(row[4]),
+            "info": int(row[5]),
+        }
+        for row in rows
+    ]
+
+
+def readiness_gap_dicts(checks: list[Check]) -> list[dict[str, str]]:
+    return [
+        {"name": name, "status": status, "detail": detail, "action": action}
+        for name, status, detail, action in readiness_gap_rows(checks)
+    ]
+
+
+def checks_payload(kind: str, checks: list[Check], context: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "kind": kind,
+        "score": readiness_score(checks),
+        "overall_breakdown_score": overall_breakdown_score(checks),
+        "breakdown": readiness_breakdown_dicts(checks),
+        "gaps": readiness_gap_dicts(checks),
+        "checks": [check_to_dict(check) for check in checks],
+    }
+    if context:
+        payload["context"] = context
+    return payload
+
+
+def emit_json(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def print_compact_checks(checks: list[Check], title: str | None = None) -> None:
+    if title:
+        print(info(title))
+    print(f"Score: {readiness_score(checks)}%")
+    gaps = [check for check in checks if check.scored and check.status in {"WARN", "FAIL"}]
+    if not gaps:
+        print(ok("No scored gaps."))
+        return
+    for check in gaps:
+        label = fail(check.status) if check.status == "FAIL" else warn(check.status)
+        print(f"{label} {check.name}: {check.detail}")
+
+
+def strict_exit_code(checks: list[Check], strict: bool = False, fail_on_warn: bool = False) -> int:
+    if not strict:
+        return EXIT_OK
+    scored_gaps = [
+        check
+        for check in checks
+        if check.scored and (check.status != "OK" if fail_on_warn else check.status == "FAIL")
+    ]
+    if not scored_gaps:
+        return EXIT_OK
+    gap_text = "\n".join(f"{check.name} {check.detail}".lower() for check in scored_gaps)
+    if "not found on path" in gap_text:
+        return EXIT_MISSING_EXTERNAL_TOOL
+    if "auth" in gap_text or "authenticated" in gap_text or "login" in gap_text:
+        return EXIT_AUTH_FAILED
+    return EXIT_VALIDATION_FAILED
+
+
+def emit_check_output(
+    title: str,
+    checks: list[Check],
+    output_format: str = "human",
+    context: dict[str, Any] | None = None,
+) -> None:
+    if output_format == "json":
+        emit_json(checks_payload(title.lower().replace(" ", "-"), checks, context=context))
+    elif output_format == "compact":
+        print_compact_checks(checks, title=title)
+    else:
+        if context:
+            lines = [f"{key}: {value}" for key, value in context.items()]
+            draw_box(title, lines)
+        else:
+            draw_box(title, [])
+        print_checks(checks)
+
+
 def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
     lines = [
         "| " + " | ".join(headers) + " |",
@@ -2571,8 +2676,8 @@ def cmd_tui(args: argparse.Namespace) -> int:
 def cmd_validate_config(args: argparse.Namespace) -> int:
     cfg = load_config(repo_root())
     checks = validate_config(cfg)
-    print_checks(checks)
-    return 1 if any(check.status == "FAIL" for check in checks) else 0
+    emit_check_output("Config", checks, output_format=getattr(args, "format", "human"))
+    return EXIT_VALIDATION_FAILED if any(check.status == "FAIL" for check in checks) else EXIT_OK
 
 
 def cmd_set(args: argparse.Namespace) -> int:
@@ -2794,37 +2899,98 @@ def cmd_gh_doctor(args: argparse.Namespace) -> int:
     root = repo_root()
     cfg = load_config(root)
     checks = collect_github_checks(root, cfg)
-    draw_box("GitHub", ["Repository readiness checks through GitHub CLI."])
-    print_checks(checks)
-    if args.strict and any(check.status == "FAIL" for check in checks if check.scored):
-        return 1
-    return 0
+    emit_check_output(
+        "GitHub",
+        checks,
+        output_format=getattr(args, "format", "human"),
+        context={"scope": "repository readiness checks through GitHub CLI"},
+    )
+    return strict_exit_code(checks, strict=getattr(args, "strict", False), fail_on_warn=True)
 
 
 def cmd_gh_status(args: argparse.Namespace) -> int:
     rows, failed_rows, error = github_actions_status(repo_root(), limit=args.limit)
+    output_format = getattr(args, "format", "human")
     if error:
-        print(warn(error))
-        return 1 if args.strict else 0
+        if output_format == "json":
+            emit_json({"kind": "github-actions-status", "error": error, "runs": [], "failed_jobs": []})
+        else:
+            print(warn(error))
+        if not getattr(args, "strict", False):
+            return EXIT_OK
+        if "not found on PATH" in error:
+            return EXIT_MISSING_EXTERNAL_TOOL
+        if "auth" in error.lower() or "login" in error.lower():
+            return EXIT_AUTH_FAILED
+        return EXIT_VALIDATION_FAILED
+    if output_format == "json":
+        emit_json({"kind": "github-actions-status", "runs": rows, "failed_jobs": failed_rows})
+        return EXIT_OK
     if not rows:
         print(warn("No GitHub Actions runs found."))
-        return 0
-    draw_table(["Workflow", "Branch", "Status", "Conclusion", "Created"], rows, title="Recent GitHub Actions Runs")
-    if failed_rows:
-        print()
-        draw_table(["Workflow", "Job", "Status", "Conclusion"], failed_rows, title="Failed Jobs")
+        return EXIT_OK
+    if output_format == "compact":
+        print(info("Recent GitHub Actions Runs"))
+        for row in rows:
+            print(" | ".join(row[:4]))
+        if failed_rows:
+            print(warn(f"Failed jobs: {len(failed_rows)}"))
     else:
-        print(ok("No failed jobs found in inspected runs."))
-    return 0
+        draw_table(["Workflow", "Branch", "Status", "Conclusion", "Created"], rows, title="Recent GitHub Actions Runs")
+        if failed_rows:
+            print()
+            draw_table(["Workflow", "Job", "Status", "Conclusion"], failed_rows, title="Failed Jobs")
+        else:
+            print(ok("No failed jobs found in inspected runs."))
+    return EXIT_OK
 
 
 def cmd_branch_doctor(args: argparse.Namespace) -> int:
     checks = collect_branch_checks(repo_root(), branch=args.branch)
-    draw_box("Branch Protection", [f"Repository branch policy checks for `{args.branch}`."])
-    print_checks(checks)
-    if args.strict and any(check.status == "FAIL" for check in checks if check.scored):
-        return 1
-    return 0
+    emit_check_output(
+        "Branch Protection",
+        checks,
+        output_format=getattr(args, "format", "human"),
+        context={"branch": args.branch},
+    )
+    return strict_exit_code(checks, strict=getattr(args, "strict", False), fail_on_warn=True)
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    command = getattr(args, "doctor_command", None) or "local"
+    if command == "github":
+        return cmd_gh_doctor(args)
+    if command == "aws":
+        return cmd_aws_doctor(args)
+    if command == "branch":
+        return cmd_branch_doctor(args)
+    if command == "actions":
+        return cmd_gh_status(args)
+    if command == "all":
+        root = repo_root()
+        cfg = load_config(root)
+        checks = collect_checks(root, cfg, deep=getattr(args, "deep", False))
+        checks.extend(collect_github_checks(root, cfg))
+        checks.extend(collect_branch_checks(root, branch=getattr(args, "branch", DEFAULT_BRANCH)))
+        checks.extend(collect_aws_checks(root, cfg, env_name=getattr(args, "environment", "prod")))
+        emit_check_output(
+            "Doctor All",
+            checks,
+            output_format=getattr(args, "format", "human"),
+            context={"environment": getattr(args, "environment", "prod"), "branch": getattr(args, "branch", DEFAULT_BRANCH)},
+        )
+        return strict_exit_code(checks, strict=getattr(args, "strict", False), fail_on_warn=True)
+    else:
+        root = repo_root()
+        cfg = load_config(root)
+        checks = collect_checks(root, cfg, deep=getattr(args, "deep", False))
+        emit_check_output(
+            "Doctor Local",
+            checks,
+            output_format=getattr(args, "format", "human"),
+            context={"deep": getattr(args, "deep", False)},
+        )
+        return strict_exit_code(checks, strict=getattr(args, "strict", False))
 
 
 def run_init(root: Path, force: bool = False, defaults: bool = False, allow_cancel: bool = False) -> int:
@@ -2959,37 +3125,97 @@ def cmd_render(args: argparse.Namespace) -> int:
     return run_render(repo_root())
 
 
-def cmd_doctor(args: argparse.Namespace) -> int:
+def cmd_readiness(args: argparse.Namespace) -> int:
     root = repo_root()
     cfg = load_config(root)
-    header(cfg)
-    checks = collect_checks(root, cfg, deep=args.deep)
-    print_checks(checks)
-    if args.strict and any(check.status == "FAIL" for check in checks if check.scored):
-        return 1
-    return 0
-
-
-def cmd_readiness(args: argparse.Namespace) -> int:
-    print_readiness_details(repo_root(), deep=args.deep)
-    return 0
+    checks = collect_checks(root, cfg, deep=getattr(args, "deep", False))
+    output_format = getattr(args, "format", "human")
+    if output_format == "json":
+        emit_json(checks_payload("readiness", checks, context={"deep": getattr(args, "deep", False)}))
+    elif output_format == "compact":
+        print_readiness_breakdown(checks, compact=True)
+        print()
+        print_gap_summary(checks, limit=5)
+    else:
+        print_readiness_details(root, deep=getattr(args, "deep", False))
+    return EXIT_OK
 
 
 def cmd_aws_doctor(args: argparse.Namespace) -> int:
     root = repo_root()
     cfg = load_config(root)
     checks = collect_aws_checks(root, cfg, env_name=args.environment)
-    draw_box(
+    emit_check_output(
         "AWS",
-        [
-            f"Environment: {args.environment}",
-            "Checks AWS identity, Terraform backend, deployed resources, IAM, and configured ECR image.",
-        ],
+        checks,
+        output_format=getattr(args, "format", "human"),
+        context={"environment": args.environment},
     )
-    print_checks(checks)
-    if args.strict and any(check.status != "OK" for check in checks if check.scored):
-        return 1
-    return 0
+    return strict_exit_code(checks, strict=getattr(args, "strict", False), fail_on_warn=True)
+
+
+def cmd_github(args: argparse.Namespace) -> int:
+    command = getattr(args, "github_command", None) or "status"
+    if command == "setup":
+        return cmd_github_setup(args)
+    if command == "doctor":
+        return cmd_gh_doctor(args)
+    if command == "status":
+        return cmd_gh_status(args)
+    if command == "branch":
+        return cmd_branch_doctor(args)
+    print(fail("Unknown GitHub command: ") + str(command))
+    print("Usage: devsecops github [setup|doctor|status|branch]")
+    return EXIT_VALIDATION_FAILED
+
+
+def cmd_terraform(args: argparse.Namespace) -> int:
+    command = getattr(args, "terraform_command", None)
+    if command == "plan":
+        return cmd_plan(args)
+    if command == "bootstrap":
+        return cmd_bootstrap(args)
+    print(fail("Usage: devsecops terraform plan <env> | bootstrap [--apply]"))
+    return EXIT_VALIDATION_FAILED
+
+
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    root = repo_root()
+    command = getattr(args, "snapshot_command", None) or "list"
+    output_format = getattr(args, "format", "human")
+    if command == "list":
+        snapshots = list_snapshots(root)
+        if output_format == "json":
+            emit_json({"kind": "snapshots", "snapshots": snapshots})
+        elif snapshots:
+            draw_table(["#", "Snapshot", "Created", "Operation"], snapshot_rows(snapshots), title="Snapshots")
+        else:
+            print(warn("No snapshots found."))
+        return EXIT_OK
+    if command == "show":
+        selection = getattr(args, "selection", None)
+        snapshot = resolve_snapshot_selection(root, selection) if selection else resolve_snapshot(root, last=True)
+        if not snapshot:
+            print(warn("Snapshot not found."))
+            return EXIT_VALIDATION_FAILED
+        if output_format == "json":
+            payload = dict(snapshot)
+            payload["changes"] = snapshot_changes(root, snapshot)
+            emit_json({"kind": "snapshot", "snapshot": payload})
+        else:
+            print_snapshot_detail(root, snapshot)
+        return EXIT_OK
+    if command == "restore":
+        rollback_args = argparse.Namespace(
+            to=getattr(args, "to", None),
+            last=getattr(args, "last", False),
+            dry_run=getattr(args, "dry_run", False),
+            yes=getattr(args, "yes", False),
+        )
+        return cmd_rollback(rollback_args)
+    print(fail("Unknown snapshot command: ") + str(command))
+    print("Usage: devsecops snapshot [list|show|restore]")
+    return EXIT_VALIDATION_FAILED
 
 
 def run_plan(root: Path, env_name: str, no_init: bool = False, create_workspace: bool = False) -> int:
@@ -3110,7 +3336,7 @@ def cmd_config(args: argparse.Namespace) -> int:
     root = repo_root()
     command = getattr(args, "config_command", None) or "show"
 
-    if command == "new":
+    if command in {"new", "create"}:
         preset_name = getattr(args, "preset", "balanced")
         path = config_path(root)
         if path.exists() and not getattr(args, "force", False):
@@ -3137,6 +3363,9 @@ def cmd_config(args: argparse.Namespace) -> int:
 
     if command == "validate":
         return cmd_validate_config(args)
+
+    if command == "set":
+        return cmd_set(args)
 
     if command == "schema":
         output_format = getattr(args, "format", "json")
@@ -3202,38 +3431,94 @@ def clear_screen() -> None:
 
 def pause_for_menu() -> None:
     input("\n[Enter] Back to main menu")
+    clear_screen()
+
+
+def print_menu_section(title: str, items: list[tuple[str, str]], columns: int = 3) -> None:
+    print(info(title))
+    for index in range(0, len(items), columns):
+        cells = [f"[{key}] {label}" for key, label in items[index : index + columns]]
+        print("  " + "  ".join(cell.ljust(28) for cell in cells))
 
 
 def print_main_menu(root: Path) -> None:
     cfg = load_config(root)
     checks = collect_checks(root, cfg, deep=False)
-    header(cfg)
-    for line in menu_status(root, cfg, checks=checks):
-        print(line)
+    score = readiness_score(checks)
+    breakdown_score = overall_breakdown_score(checks)
+    image_state = "set" if cfg["lambda_image_uri"] else "missing"
+    backend_state = "set" if not cfg["backend"]["bucket"].startswith("replace-with") else "missing"
+    health_state = "on" if cfg["enable_http_validation"] else "off"
+    dast_state = "on" if cfg["enable_dast"] else "off"
+    gaps = readiness_gap_rows(checks)[:2]
+
+    print(color("DevSecOps Pipeline Kit", Style.BOLD))
+    print(f"{cfg['project_name']} | {cfg['aws_region']} | readiness {breakdown_score}% | scored {score}%")
+    print(f"image: {image_state} | backend: {backend_state} | health: {health_state} | DAST: {dast_state}")
+    if gaps:
+        print()
+        print(info("Top gaps:"))
+        for name, status, _detail, action in gaps:
+            label = fail(status) if status == "FAIL" else warn(status)
+            print(f"  {label} {name}: {action}")
+    else:
+        print()
+        print(ok("Top gaps: none."))
     print()
-    print_readiness_breakdown(checks, compact=True)
-    print()
-    print_gap_summary(checks, limit=2)
-    print()
-    print("[1] Dashboard")
-    print("[2] Configure pipeline")
-    print("[3] Validate environment")
-    print("[4] Render Terraform/GitHub config")
-    print("[5] Bootstrap Terraform backend plan")
-    print("[6] Run Terraform plan")
-    print("[7] Security controls overview")
-    print("[8] Environment table")
-    print("[9] Export readiness report")
-    print("[10] GitHub setup commands")
-    print("[11] GitHub doctor")
-    print("[12] GitHub Actions status")
-    print("[13] Branch protection doctor")
-    print("[14] Apply preset")
-    print("[15] Show config")
-    print("[16] Snapshots / Rollback")
-    print("[17] AWS doctor")
-    print("[18] Pipeline composer")
-    print("[0] Exit")
+    print_menu_section(
+        "Core",
+        [
+            ("1", "Dashboard"),
+            ("2", "Render artifacts"),
+            ("3", "Readiness report"),
+        ],
+    )
+    print_menu_section(
+        "Config",
+        [
+            ("4", "Interactive setup"),
+            ("5", "Apply preset"),
+            ("6", "Show config"),
+            ("7", "Composer"),
+        ],
+    )
+    print_menu_section(
+        "Diagnostics",
+        [
+            ("8", "Doctor local/deep"),
+            ("9", "AWS doctor"),
+            ("10", "Readiness details"),
+        ],
+    )
+    print_menu_section(
+        "Terraform",
+        [
+            ("11", "Bootstrap plan"),
+            ("12", "Terraform plan"),
+        ],
+    )
+    print_menu_section(
+        "GitHub",
+        [
+            ("13", "Setup commands"),
+            ("14", "GitHub doctor"),
+            ("15", "Actions status"),
+        ],
+    )
+    print_menu_section(
+        "Reference",
+        [
+            ("16", "Security controls"),
+            ("17", "Environment table"),
+        ],
+    )
+    print_menu_section(
+        "Recovery",
+        [
+            ("18", "Snapshots / rollback"),
+            ("0", "Exit"),
+        ],
+    )
 
 
 def open_menu_section(title: str, handler: Any, *args: Any) -> None:
@@ -3278,9 +3563,198 @@ def menu_config_section(root: Path) -> None:
     pause_for_menu()
 
 
+def menu_config_hub(root: Path) -> None:
+    clear_screen()
+    draw_box("Config", ["Create, inspect, validate, and edit local source config."])
+    print()
+    print("[1] New clean config (balanced)")
+    print("[2] Interactive setup")
+    print("[3] Show config")
+    print("[4] Validate config")
+    print("[5] Diff config")
+    print("[6] Set config value")
+    print("[7] Apply preset")
+    print("[8] Pipeline composer")
+    print("[0] Back")
+    choice = input("\nChoose: ").strip().lower()
+    if choice in MENU_CANCEL_INPUTS:
+        clear_screen()
+        return
+    if choice == "1":
+        cmd_config(argparse.Namespace(config_command="new", preset="balanced", force=False, render=False))
+    elif choice == "2":
+        run_init(root, force=True, defaults=False, allow_cancel=True)
+    elif choice == "3":
+        cmd_config(argparse.Namespace(config_command="show", format="toml"))
+    elif choice == "4":
+        cmd_config(argparse.Namespace(config_command="validate", format="human"))
+    elif choice == "5":
+        cmd_config(argparse.Namespace(config_command="diff", preset=None, exit_code=False))
+    elif choice == "6":
+        key = prompt_text("Config key", "backend.bucket")
+        if is_cancel_input(key):
+            clear_screen()
+            return
+        value = prompt_text("Value", "")
+        if is_cancel_input(value):
+            clear_screen()
+            return
+        render_after = prompt_bool("Render artifacts after update", False)
+        cmd_config(argparse.Namespace(config_command="set", key=key, value=value, render=render_after))
+    elif choice == "7":
+        preset_name = prompt_text("Preset", "balanced")
+        if is_cancel_input(preset_name):
+            clear_screen()
+            return
+        cmd_preset(argparse.Namespace(command="apply", name=preset_name, render=False))
+    elif choice == "8":
+        cmd_compose(argparse.Namespace())
+    else:
+        print(warn("Unknown option."))
+    pause_for_menu()
+
+
 def menu_readiness_section(root: Path) -> None:
     clear_screen()
     print_readiness_details(root)
+    pause_for_menu()
+
+
+def menu_doctor_hub(root: Path) -> None:
+    clear_screen()
+    draw_box("Doctor", ["Run local, GitHub, AWS, branch, Actions, or full diagnostics."])
+    print()
+    print("[1] Local")
+    print("[2] Local deep")
+    print("[3] GitHub")
+    print("[4] AWS prod")
+    print("[5] Actions status")
+    print("[6] Branch protection")
+    print("[7] All compact")
+    print("[0] Back")
+    choice = input("\nChoose: ").strip().lower()
+    if choice in MENU_CANCEL_INPUTS:
+        clear_screen()
+        return
+    if choice == "1":
+        cmd_doctor(argparse.Namespace(doctor_command="local", deep=False, strict=False, format="human"))
+    elif choice == "2":
+        cmd_doctor(argparse.Namespace(doctor_command="local", deep=True, strict=False, format="human"))
+    elif choice == "3":
+        cmd_doctor(argparse.Namespace(doctor_command="github", strict=False, format="human"))
+    elif choice == "4":
+        cmd_doctor(argparse.Namespace(doctor_command="aws", environment="prod", strict=False, format="human"))
+    elif choice == "5":
+        cmd_doctor(argparse.Namespace(doctor_command="actions", strict=False, limit=8, format="human"))
+    elif choice == "6":
+        cmd_doctor(argparse.Namespace(doctor_command="branch", branch=DEFAULT_BRANCH, strict=False, format="human"))
+    elif choice == "7":
+        cmd_doctor(
+            argparse.Namespace(
+                doctor_command="all",
+                deep=False,
+                branch=DEFAULT_BRANCH,
+                environment="prod",
+                strict=False,
+                format="compact",
+            )
+        )
+    else:
+        print(warn("Unknown option."))
+    pause_for_menu()
+
+
+def menu_terraform_hub(root: Path) -> None:
+    clear_screen()
+    draw_box("Terraform", ["Plan environments or inspect backend bootstrap changes."])
+    print()
+    print("[1] Bootstrap backend plan")
+    print("[2] Plan dev")
+    print("[3] Plan staging")
+    print("[4] Plan prod")
+    print("[5] Custom plan")
+    print("[0] Back")
+    choice = input("\nChoose: ").strip().lower()
+    if choice in MENU_CANCEL_INPUTS:
+        clear_screen()
+        return
+    if choice == "1":
+        cmd_bootstrap(argparse.Namespace(apply=False))
+    elif choice in {"2", "3", "4"}:
+        env_name = {"2": "dev", "3": "staging", "4": "prod"}[choice]
+        run_plan(root, env_name)
+    elif choice == "5":
+        env_name = prompt_text("Environment", "dev")
+        if is_cancel_input(env_name):
+            clear_screen()
+            return
+        run_plan(root, env_name)
+    else:
+        print(warn("Unknown option."))
+    pause_for_menu()
+
+
+def menu_github_hub() -> None:
+    clear_screen()
+    draw_box("GitHub", ["Prepare repository settings and inspect GitHub readiness."])
+    print()
+    print("[1] Setup commands")
+    print("[2] GitHub doctor")
+    print("[3] Actions status")
+    print("[4] Branch protection")
+    print("[0] Back")
+    choice = input("\nChoose: ").strip().lower()
+    if choice in MENU_CANCEL_INPUTS:
+        clear_screen()
+        return
+    if choice == "1":
+        cmd_github_setup(
+            argparse.Namespace(
+                write=False,
+                apply=False,
+                deploy_role_arn=None,
+                plan_role_arn=None,
+                snyk_token=None,
+            )
+        )
+    elif choice == "2":
+        cmd_gh_doctor(argparse.Namespace(strict=False, format="human"))
+    elif choice == "3":
+        cmd_gh_status(argparse.Namespace(strict=False, limit=8, format="human"))
+    elif choice == "4":
+        cmd_branch_doctor(argparse.Namespace(branch=DEFAULT_BRANCH, strict=False, format="human"))
+    else:
+        print(warn("Unknown option."))
+    pause_for_menu()
+
+
+def menu_reference_hub() -> None:
+    clear_screen()
+    draw_box("Reference", ["Inspect controls, environments, architecture, or a focused control explanation."])
+    print()
+    print("[1] Security controls")
+    print("[2] Environment table")
+    print("[3] Architecture")
+    print("[4] Explain control")
+    print("[0] Back")
+    choice = input("\nChoose: ").strip().lower()
+    if choice in MENU_CANCEL_INPUTS:
+        clear_screen()
+        return
+    if choice == "1":
+        cmd_controls(argparse.Namespace())
+    elif choice == "2":
+        cmd_envs(argparse.Namespace())
+    elif choice == "3":
+        cmd_architecture(argparse.Namespace())
+    elif choice == "4":
+        topic = prompt_text("Topic", "oidc")
+        if is_cancel_input(topic):
+            clear_screen()
+            return
+        cmd_explain(argparse.Namespace(topic=topic))
+    else:
+        print(warn("Unknown option."))
     pause_for_menu()
 
 
@@ -3344,31 +3818,43 @@ def cmd_menu(args: argparse.Namespace) -> int:
         print_main_menu(root)
         choice = input("\nChoose: ").strip()
         normalized_choice = choice.lower()
-        if normalized_choice in {"i", "info", "readiness", "?"}:
+        if normalized_choice in {"10", "i", "info", "readiness", "?"}:
             menu_readiness_section(root)
-        elif choice == "1":
+        elif normalized_choice in {"d", "1", "dashboard"}:
             open_menu_section("Dashboard", cmd_dashboard, argparse.Namespace(mode="full", watch=False, interval=5))
+        elif normalized_choice in {"c", "config"}:
+            menu_config_hub(root)
         elif choice == "2":
-            menu_config_section(root)
-        elif choice == "3":
-            open_menu_section("Validate Environment", cmd_doctor, argparse.Namespace(deep=True, strict=False))
-        elif choice == "4":
             open_menu_section("Render Config", run_render, root)
-        elif choice == "5":
-            open_menu_section("Bootstrap Backend Plan", cmd_bootstrap, argparse.Namespace(apply=False))
-        elif choice == "6":
-            menu_plan_section(root)
-        elif choice == "7":
-            def show_controls_overview() -> None:
-                for topic_name in ["oidc", "backend", "image", "rollback", "dast"]:
-                    draw_box(f"Explain: {topic_name}", explain_text(topic_name))
-
-            open_menu_section("Security Controls", show_controls_overview)
-        elif choice == "8":
-            open_menu_section("Environment Table", cmd_envs, argparse.Namespace())
-        elif choice == "9":
+        elif normalized_choice in {"o", "doctor"}:
+            menu_doctor_hub(root)
+        elif choice == "3":
             open_menu_section("Export Readiness Report", cmd_report, argparse.Namespace(deep=False, output=None, print=False))
-        elif choice == "10":
+        elif normalized_choice in {"r", "render"}:
+            open_menu_section("Render Config", run_render, root)
+        elif choice == "4":
+            menu_config_section(root)
+        elif normalized_choice in {"t", "terraform"}:
+            menu_terraform_hub(root)
+        elif choice == "5":
+            menu_preset_section()
+        elif choice == "6":
+            open_menu_section("Show Config", cmd_config, argparse.Namespace())
+        elif normalized_choice in {"h", "help", "reference"}:
+            menu_reference_hub()
+        elif choice == "7":
+            open_menu_section("Pipeline Composer", cmd_compose, argparse.Namespace())
+        elif choice == "8":
+            open_menu_section("Validate Environment", cmd_doctor, argparse.Namespace(deep=True, strict=False))
+        elif choice == "9":
+            open_menu_section("AWS Doctor", cmd_aws_doctor, argparse.Namespace(environment="prod", strict=False))
+        elif choice == "11":
+            open_menu_section("Bootstrap Backend Plan", cmd_bootstrap, argparse.Namespace(apply=False))
+        elif choice == "12":
+            menu_plan_section(root)
+        elif normalized_choice in {"g", "github"}:
+            menu_github_hub()
+        elif choice == "13":
             open_menu_section(
                 "GitHub Setup Commands",
                 cmd_github_setup,
@@ -3380,23 +3866,23 @@ def cmd_menu(args: argparse.Namespace) -> int:
                     snyk_token=None,
                 ),
             )
-        elif choice == "11":
-            open_menu_section("GitHub Doctor", cmd_gh_doctor, argparse.Namespace(strict=False))
-        elif choice == "12":
-            open_menu_section("GitHub Actions Status", cmd_gh_status, argparse.Namespace(strict=False, limit=8))
-        elif choice == "13":
-            open_menu_section("Branch Protection Doctor", cmd_branch_doctor, argparse.Namespace(branch=DEFAULT_BRANCH, strict=False))
         elif choice == "14":
-            menu_preset_section()
+            open_menu_section("GitHub Doctor", cmd_gh_doctor, argparse.Namespace(strict=False, format="human"))
         elif choice == "15":
-            open_menu_section("Show Config", cmd_config, argparse.Namespace())
+            open_menu_section("GitHub Actions Status", cmd_gh_status, argparse.Namespace(strict=False, limit=8, format="human"))
         elif choice == "16":
-            menu_rollback_section(root)
+            def show_controls_overview() -> None:
+                for topic_name in ["oidc", "backend", "image", "rollback", "dast"]:
+                    draw_box(f"Explain: {topic_name}", explain_text(topic_name))
+
+            open_menu_section("Security Controls", show_controls_overview)
         elif choice == "17":
-            open_menu_section("AWS Doctor", cmd_aws_doctor, argparse.Namespace(environment="prod", strict=False))
-        elif choice == "18":
-            open_menu_section("Pipeline Composer", cmd_compose, argparse.Namespace())
-        elif choice == "0":
+            open_menu_section("Environment Table", cmd_envs, argparse.Namespace())
+        elif normalized_choice in {"p", "report"}:
+            open_menu_section("Export Readiness Report", cmd_report, argparse.Namespace(deep=False, output=None, print=False))
+        elif normalized_choice in {"s", "18", "snapshot", "snapshots"}:
+            menu_rollback_section(root)
+        elif normalized_choice in {"0", "q", "quit", "exit"}:
             clear_screen()
             return 0
         else:
@@ -3428,11 +3914,23 @@ def build_parser() -> argparse.ArgumentParser:
               README.md
               docs/command-inventory.md
               docs/generated-artifacts.md
+
+            Legacy aliases still work:
+              init, set, validate-config, preset, compose, snapshots, rollback,
+              github-setup, gh-doctor, aws-doctor, actions-status, branch-doctor,
+              plan, bootstrap, envs, controls, architecture, tui
+
+            Stable exit codes:
+              0 ok, 1 validation failed, 2 missing external tool,
+              3 authentication failed, 70 unexpected runtime error, 130 interrupted
             """
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
-    subparsers = parser.add_subparsers(dest="command")
+    subparsers = parser.add_subparsers(
+        dest="command",
+        metavar="{menu,config,doctor,render,github,terraform,snapshot,readiness,report,dashboard,explain}",
+    )
     parser.set_defaults(func=cmd_menu)
 
     menu_parser = subparsers.add_parser("menu", help="Open the interactive main menu.")
@@ -3444,30 +3942,70 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_parser.add_argument("--mode", choices=["compact", "full"], default="full", help="Dashboard detail level.")
     dashboard_parser.set_defaults(func=cmd_dashboard)
 
-    tui_parser = subparsers.add_parser("tui", help="Open the optional Rich/Textual terminal UI. Experimental.")
+    tui_parser = subparsers.add_parser("tui", help=argparse.SUPPRESS)
     tui_parser.set_defaults(func=cmd_tui)
 
-    envs_parser = subparsers.add_parser("envs", help="Print environment settings table.")
+    envs_parser = subparsers.add_parser("envs", help=argparse.SUPPRESS)
     envs_parser.set_defaults(func=cmd_envs)
 
-    controls_parser = subparsers.add_parser("controls", help="Print security controls matrix.")
+    controls_parser = subparsers.add_parser("controls", help=argparse.SUPPRESS)
     controls_parser.set_defaults(func=cmd_controls)
 
-    architecture_parser = subparsers.add_parser("architecture", help="Print architecture tree.")
+    architecture_parser = subparsers.add_parser("architecture", help=argparse.SUPPRESS)
     architecture_parser.set_defaults(func=cmd_architecture)
 
-    init_parser = subparsers.add_parser("init", help="Create or update local pipeline config. Interactive legacy entry point.")
+    init_parser = subparsers.add_parser("init", help=argparse.SUPPRESS)
     init_parser.add_argument("--force", action="store_true", help="Overwrite existing config without asking.")
     init_parser.add_argument("--defaults", action="store_true", help="Write default config without prompts.")
     init_parser.set_defaults(func=cmd_init)
 
-    doctor_parser = subparsers.add_parser("doctor", help="Check local readiness.")
+    doctor_parser = subparsers.add_parser("doctor", help="Run local, GitHub, AWS, branch, or Actions diagnostics.")
     doctor_parser.add_argument("--deep", action="store_true", help="Run Terraform validate and AWS resource checks.")
     doctor_parser.add_argument("--strict", action="store_true", help="Exit non-zero on failed scored checks.")
-    doctor_parser.set_defaults(func=cmd_doctor)
+    doctor_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    doctor_parser.set_defaults(func=cmd_doctor, doctor_command="local")
+    doctor_subparsers = doctor_parser.add_subparsers(dest="doctor_command", metavar="{local,github,aws,branch,actions,all}")
+
+    doctor_local_parser = doctor_subparsers.add_parser("local", help="Check local config, files, tools, and render state.")
+    doctor_local_parser.add_argument("--deep", action="store_true", help="Run Terraform validate and AWS resource checks.")
+    doctor_local_parser.add_argument("--strict", action="store_true", help="Exit non-zero on failed scored checks.")
+    doctor_local_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    doctor_local_parser.set_defaults(func=cmd_doctor)
+
+    doctor_github_parser = doctor_subparsers.add_parser("github", help="Check GitHub CLI, repository variables, and secrets.")
+    doctor_github_parser.add_argument("--strict", action="store_true", help="Exit non-zero on failed scored checks.")
+    doctor_github_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    doctor_github_parser.set_defaults(func=cmd_doctor)
+
+    doctor_aws_parser = doctor_subparsers.add_parser("aws", help="Check AWS identity, backend, and deployed resources.")
+    doctor_aws_parser.add_argument("--environment", choices=ENVIRONMENTS, default="prod", help="Environment resources to inspect.")
+    doctor_aws_parser.add_argument("--strict", action="store_true", help="Exit non-zero on WARN or FAIL scored checks.")
+    doctor_aws_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    doctor_aws_parser.set_defaults(func=cmd_doctor)
+
+    doctor_branch_parser = doctor_subparsers.add_parser("branch", help="Check branch protection and required checks.")
+    doctor_branch_parser.add_argument("--branch", default=DEFAULT_BRANCH, help="Branch to inspect.")
+    doctor_branch_parser.add_argument("--strict", action="store_true", help="Exit non-zero on failed scored checks.")
+    doctor_branch_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    doctor_branch_parser.set_defaults(func=cmd_doctor)
+
+    doctor_actions_parser = doctor_subparsers.add_parser("actions", help="Show recent GitHub Actions runs and failed jobs.")
+    doctor_actions_parser.add_argument("--strict", action="store_true", help="Exit non-zero when status cannot be read.")
+    doctor_actions_parser.add_argument("--limit", type=int, default=8, help="Number of workflow runs to inspect.")
+    doctor_actions_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    doctor_actions_parser.set_defaults(func=cmd_doctor)
+
+    doctor_all_parser = doctor_subparsers.add_parser("all", help="Run local, GitHub, branch, and AWS checks together.")
+    doctor_all_parser.add_argument("--deep", action="store_true", help="Run Terraform validate in local checks.")
+    doctor_all_parser.add_argument("--branch", default=DEFAULT_BRANCH, help="Branch to inspect.")
+    doctor_all_parser.add_argument("--environment", choices=ENVIRONMENTS, default="prod", help="AWS environment resources to inspect.")
+    doctor_all_parser.add_argument("--strict", action="store_true", help="Exit non-zero on WARN or FAIL scored checks.")
+    doctor_all_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    doctor_all_parser.set_defaults(func=cmd_doctor)
 
     readiness_parser = subparsers.add_parser("readiness", help="Show what blocks 100%% readiness.")
     readiness_parser.add_argument("--deep", action="store_true", help="Include Terraform/AWS deep checks.")
+    readiness_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     readiness_parser.set_defaults(func=cmd_readiness)
 
     render_parser = subparsers.add_parser("render", help="Render CLI-owned Terraform/GitHub helper artifacts.")
@@ -3479,18 +4017,47 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument("--print", action="store_true", help="Print report after writing it.")
     report_parser.set_defaults(func=cmd_report)
 
-    snapshots_parser = subparsers.add_parser("snapshots", help="List local CLI snapshots.")
+    snapshots_parser = subparsers.add_parser("snapshots", help=argparse.SUPPRESS)
     snapshots_parser.add_argument("--show", help="Show snapshot details by number or id.")
     snapshots_parser.set_defaults(func=cmd_snapshots)
 
-    rollback_parser = subparsers.add_parser("rollback", help="Restore CLI-owned files from a snapshot.")
+    rollback_parser = subparsers.add_parser("rollback", help=argparse.SUPPRESS)
     rollback_parser.add_argument("--to", help="Snapshot number or id to restore.")
     rollback_parser.add_argument("--last", action="store_true", help="Restore the newest snapshot.")
     rollback_parser.add_argument("--dry-run", action="store_true", help="Preview rollback without changing files.")
     rollback_parser.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
     rollback_parser.set_defaults(func=cmd_rollback)
 
-    github_setup_parser = subparsers.add_parser("github-setup", help="Print or write gh setup commands.")
+    github_parser = subparsers.add_parser("github", help="Manage GitHub setup, status, and repository diagnostics.")
+    github_parser.set_defaults(func=cmd_github, github_command="status", strict=False, limit=8, format="human")
+    github_subparsers = github_parser.add_subparsers(dest="github_command", metavar="{setup,doctor,status,branch}")
+
+    github_group_setup_parser = github_subparsers.add_parser("setup", help="Print, write, or apply GitHub setup commands.")
+    github_group_setup_parser.add_argument("--write", action="store_true", help="Write dist/devsecops/github-setup.sh.")
+    github_group_setup_parser.add_argument("--apply", action="store_true", help="Apply safe GitHub variables/secrets with gh.")
+    github_group_setup_parser.add_argument("--deploy-role-arn", help="Value for AWS_ROLE_TO_ASSUME_ARN when using --apply.")
+    github_group_setup_parser.add_argument("--plan-role-arn", help="Value for AWS_PLAN_ROLE_TO_ASSUME_ARN when using --apply.")
+    github_group_setup_parser.add_argument("--snyk-token", help="Optional SNYK_TOKEN value when using --apply.")
+    github_group_setup_parser.set_defaults(func=cmd_github)
+
+    github_group_doctor_parser = github_subparsers.add_parser("doctor", help="Check GitHub CLI, variables, and secrets.")
+    github_group_doctor_parser.add_argument("--strict", action="store_true", help="Exit non-zero on failed scored checks.")
+    github_group_doctor_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    github_group_doctor_parser.set_defaults(func=cmd_github)
+
+    github_group_status_parser = github_subparsers.add_parser("status", help="Show recent GitHub Actions runs and failed jobs.")
+    github_group_status_parser.add_argument("--strict", action="store_true", help="Exit non-zero when status cannot be read.")
+    github_group_status_parser.add_argument("--limit", type=int, default=8, help="Number of workflow runs to inspect.")
+    github_group_status_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    github_group_status_parser.set_defaults(func=cmd_github)
+
+    github_group_branch_parser = github_subparsers.add_parser("branch", help="Check branch protection and required checks.")
+    github_group_branch_parser.add_argument("--branch", default=DEFAULT_BRANCH, help="Branch to inspect.")
+    github_group_branch_parser.add_argument("--strict", action="store_true", help="Exit non-zero on failed scored checks.")
+    github_group_branch_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    github_group_branch_parser.set_defaults(func=cmd_github)
+
+    github_setup_parser = subparsers.add_parser("github-setup", help=argparse.SUPPRESS)
     github_setup_parser.add_argument("--write", action="store_true", help="Write dist/devsecops/github-setup.sh.")
     github_setup_parser.add_argument("--apply", action="store_true", help="Apply safe GitHub variables/secrets with gh.")
     github_setup_parser.add_argument("--deploy-role-arn", help="Value for AWS_ROLE_TO_ASSUME_ARN when using --apply.")
@@ -3498,7 +4065,7 @@ def build_parser() -> argparse.ArgumentParser:
     github_setup_parser.add_argument("--snyk-token", help="Optional SNYK_TOKEN value when using --apply.")
     github_setup_parser.set_defaults(func=cmd_github_setup)
 
-    gh_setup_parser = subparsers.add_parser("gh-setup", help="Alias for github-setup. Prefer github-setup.")
+    gh_setup_parser = subparsers.add_parser("gh-setup", help=argparse.SUPPRESS)
     gh_setup_parser.add_argument("--write", action="store_true", help="Write dist/devsecops/github-setup.sh.")
     gh_setup_parser.add_argument("--apply", action="store_true", help="Apply safe GitHub variables/secrets with gh.")
     gh_setup_parser.add_argument("--deploy-role-arn", help="Value for AWS_ROLE_TO_ASSUME_ARN when using --apply.")
@@ -3506,40 +4073,46 @@ def build_parser() -> argparse.ArgumentParser:
     gh_setup_parser.add_argument("--snyk-token", help="Optional SNYK_TOKEN value when using --apply.")
     gh_setup_parser.set_defaults(func=cmd_github_setup)
 
-    gh_doctor_parser = subparsers.add_parser("gh-doctor", help="Check GitHub CLI, repo variables, and repo secrets.")
+    gh_doctor_parser = subparsers.add_parser("gh-doctor", help=argparse.SUPPRESS)
     gh_doctor_parser.add_argument("--strict", action="store_true", help="Exit non-zero on failed scored checks.")
+    gh_doctor_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     gh_doctor_parser.set_defaults(func=cmd_gh_doctor)
 
-    aws_doctor_parser = subparsers.add_parser("aws-doctor", help="Check AWS identity, backend, and deployed resources. Experimental.")
+    aws_doctor_parser = subparsers.add_parser("aws-doctor", help=argparse.SUPPRESS)
     aws_doctor_parser.add_argument("--environment", choices=ENVIRONMENTS, default="prod", help="Environment resources to inspect.")
     aws_doctor_parser.add_argument("--strict", action="store_true", help="Exit non-zero on WARN or FAIL scored checks.")
+    aws_doctor_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     aws_doctor_parser.set_defaults(func=cmd_aws_doctor)
 
-    gh_status_parser = subparsers.add_parser("gh-status", help="Alias for actions-status. Prefer actions-status.")
+    gh_status_parser = subparsers.add_parser("gh-status", help=argparse.SUPPRESS)
     gh_status_parser.add_argument("--strict", action="store_true", help="Exit non-zero when status cannot be read.")
     gh_status_parser.add_argument("--limit", type=int, default=8, help="Number of workflow runs to inspect.")
+    gh_status_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     gh_status_parser.set_defaults(func=cmd_gh_status)
 
-    actions_status_parser = subparsers.add_parser("actions-status", help="Show recent GitHub Actions runs and failed jobs.")
+    actions_status_parser = subparsers.add_parser("actions-status", help=argparse.SUPPRESS)
     actions_status_parser.add_argument("--strict", action="store_true", help="Exit non-zero when status cannot be read.")
     actions_status_parser.add_argument("--limit", type=int, default=8, help="Number of workflow runs to inspect.")
+    actions_status_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     actions_status_parser.set_defaults(func=cmd_gh_status)
 
-    branch_doctor_parser = subparsers.add_parser("branch-doctor", help="Check branch protection and required checks.")
+    branch_doctor_parser = subparsers.add_parser("branch-doctor", help=argparse.SUPPRESS)
     branch_doctor_parser.add_argument("--branch", default=DEFAULT_BRANCH, help="Branch to inspect.")
     branch_doctor_parser.add_argument("--strict", action="store_true", help="Exit non-zero on failed scored checks.")
+    branch_doctor_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     branch_doctor_parser.set_defaults(func=cmd_branch_doctor)
 
-    set_parser = subparsers.add_parser("set", help="Set a local source config value.")
+    set_parser = subparsers.add_parser("set", help=argparse.SUPPRESS)
     set_parser.add_argument("key", help="Config key, for example backend.bucket.")
     set_parser.add_argument("value", help="New value. Lists use comma-separated values.")
     set_parser.add_argument("--render", action="store_true", help="Render artifacts after updating config.")
     set_parser.set_defaults(func=cmd_set)
 
-    validate_config_parser = subparsers.add_parser("validate-config", help="Validate local source config values. Prefer config validate.")
+    validate_config_parser = subparsers.add_parser("validate-config", help=argparse.SUPPRESS)
+    validate_config_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     validate_config_parser.set_defaults(func=cmd_validate_config)
 
-    preset_parser = subparsers.add_parser("preset", help="List, show, or apply a policy preset.")
+    preset_parser = subparsers.add_parser("preset", help=argparse.SUPPRESS)
     preset_parser.add_argument(
         "command",
         nargs="?",
@@ -3549,16 +4122,51 @@ def build_parser() -> argparse.ArgumentParser:
     preset_parser.add_argument("--render", action="store_true", help="Render artifacts after applying preset.")
     preset_parser.set_defaults(func=cmd_preset)
 
-    compose_parser = subparsers.add_parser("compose", help="Choose controls and generate config/artifacts/report. Experimental.")
+    compose_parser = subparsers.add_parser("compose", help=argparse.SUPPRESS)
     compose_parser.set_defaults(func=cmd_compose)
 
-    plan_parser = subparsers.add_parser("plan", help="Run Terraform plan for an environment. Experimental.")
+    terraform_parser = subparsers.add_parser("terraform", help="Run Terraform plan and backend bootstrap helpers.")
+    terraform_parser.set_defaults(func=cmd_terraform)
+    terraform_subparsers = terraform_parser.add_subparsers(dest="terraform_command", metavar="{plan,bootstrap}")
+
+    terraform_plan_parser = terraform_subparsers.add_parser("plan", help="Run Terraform plan for an environment.")
+    terraform_plan_parser.add_argument("environment", choices=ENVIRONMENTS)
+    terraform_plan_parser.add_argument("--no-init", action="store_true", help="Skip Terraform init.")
+    terraform_plan_parser.add_argument("--create-workspace", action="store_true", help="Create the workspace if it is missing.")
+    terraform_plan_parser.set_defaults(func=cmd_terraform)
+
+    terraform_bootstrap_parser = terraform_subparsers.add_parser("bootstrap", help="Plan or apply backend bootstrap.")
+    terraform_bootstrap_parser.add_argument("--apply", action="store_true", help="Apply backend bootstrap with auto-approve.")
+    terraform_bootstrap_parser.set_defaults(func=cmd_terraform)
+
+    snapshot_parser = subparsers.add_parser("snapshot", help="List, inspect, or restore local CLI snapshots.")
+    snapshot_parser.add_argument("--format", choices=["human", "json"], default="human", help="Output mode for default list.")
+    snapshot_parser.set_defaults(func=cmd_snapshot, snapshot_command="list")
+    snapshot_subparsers = snapshot_parser.add_subparsers(dest="snapshot_command", metavar="{list,show,restore}")
+
+    snapshot_list_parser = snapshot_subparsers.add_parser("list", help="List local CLI snapshots.")
+    snapshot_list_parser.add_argument("--format", choices=["human", "json"], default="human", help="Output mode.")
+    snapshot_list_parser.set_defaults(func=cmd_snapshot)
+
+    snapshot_show_parser = snapshot_subparsers.add_parser("show", help="Show snapshot details by number or id.")
+    snapshot_show_parser.add_argument("selection", nargs="?", help="Snapshot number or id. Defaults to newest snapshot.")
+    snapshot_show_parser.add_argument("--format", choices=["human", "json"], default="human", help="Output mode.")
+    snapshot_show_parser.set_defaults(func=cmd_snapshot)
+
+    snapshot_restore_parser = snapshot_subparsers.add_parser("restore", help="Restore CLI-owned files from a snapshot.")
+    snapshot_restore_parser.add_argument("--to", help="Snapshot number or id to restore.")
+    snapshot_restore_parser.add_argument("--last", action="store_true", help="Restore the newest snapshot.")
+    snapshot_restore_parser.add_argument("--dry-run", action="store_true", help="Preview rollback without changing files.")
+    snapshot_restore_parser.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
+    snapshot_restore_parser.set_defaults(func=cmd_snapshot)
+
+    plan_parser = subparsers.add_parser("plan", help=argparse.SUPPRESS)
     plan_parser.add_argument("environment", choices=ENVIRONMENTS)
     plan_parser.add_argument("--no-init", action="store_true", help="Skip Terraform init.")
     plan_parser.add_argument("--create-workspace", action="store_true", help="Create the workspace if it is missing.")
     plan_parser.set_defaults(func=cmd_plan)
 
-    bootstrap_parser = subparsers.add_parser("bootstrap", help="Plan or apply backend bootstrap. Experimental.")
+    bootstrap_parser = subparsers.add_parser("bootstrap", help=argparse.SUPPRESS)
     bootstrap_parser.add_argument("--apply", action="store_true", help="Apply backend bootstrap with auto-approve.")
     bootstrap_parser.set_defaults(func=cmd_bootstrap)
 
@@ -3599,9 +4207,25 @@ def build_parser() -> argparse.ArgumentParser:
     config_reset_parser.add_argument("--render", action="store_true", help="Render artifacts after resetting config.")
     config_reset_parser.set_defaults(func=cmd_config)
 
+    config_set_parser = config_subparsers.add_parser("set", help="Set a local source config value.")
+    config_set_parser.add_argument("key", help="Config key, for example backend.bucket.")
+    config_set_parser.add_argument("value", help="New value. Lists use comma-separated values.")
+    config_set_parser.add_argument("--render", action="store_true", help="Render artifacts after updating config.")
+    config_set_parser.set_defaults(func=cmd_config)
+
+    config_create_parser = config_subparsers.add_parser("create", help="Alias for config new.")
+    config_create_parser.add_argument("--preset", choices=PRESET_ORDER, default="balanced", help="Preset to use for the clean config.")
+    config_create_parser.add_argument("--force", action="store_true", help="Replace an existing config after taking a snapshot.")
+    config_create_parser.add_argument("--render", action="store_true", help="Render artifacts after writing config.")
+    config_create_parser.set_defaults(func=cmd_config)
+
     config_schema_parser = config_subparsers.add_parser("schema", help="Print the local config schema contract.")
     config_schema_parser.add_argument("--format", choices=["json", "markdown"], default="json", help="Schema output format.")
     config_schema_parser.set_defaults(func=cmd_config)
+    if hasattr(subparsers, "_choices_actions"):
+        subparsers._choices_actions = [  # type: ignore[attr-defined]
+            choice for choice in subparsers._choices_actions if getattr(choice, "help", None) != argparse.SUPPRESS
+        ]
     return parser
 
 
@@ -3613,7 +4237,10 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print()
         print(warn("Interrupted."))
-        return 130
+        return EXIT_INTERRUPTED
+    except Exception as exc:  # pragma: no cover - defensive CLI boundary
+        print(fail("Unexpected error: ") + str(exc))
+        return EXIT_UNEXPECTED_ERROR
 
 
 if __name__ == "__main__":

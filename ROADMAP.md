@@ -129,31 +129,32 @@ Acceptance criteria:
 ## Milestone 2: CLI UX Consolidation
 
 Target release: `v0.4.0`.
+Status: implemented in `Unreleased`.
 
 Problem: the command surface is powerful but too wide for a first-time user.
 
 Planned improvements:
 
-* Organize commands into clear groups:
+- [x] Organize commands into clear groups:
   * `config`: create, show, set, validate, diff, reset, schema.
   * `render`: generate Terraform and GitHub helper artifacts.
   * `doctor`: local, GitHub, AWS, branch, actions, and deep diagnostics.
   * `terraform`: plan and bootstrap helpers.
   * `github`: setup and status helpers.
   * `snapshot`: list, inspect, and restore CLI-managed files.
-* Keep top-level compatibility aliases where useful, but mark legacy aliases in
+- [x] Keep top-level compatibility aliases where useful, but mark legacy aliases in
   help output.
-* Standardize output modes: human, compact, and JSON where automation needs it.
-* Define stable exit codes for validation failure, missing external tools,
+- [x] Standardize output modes: human, compact, and JSON where automation needs it.
+- [x] Define stable exit codes for validation failure, missing external tools,
   authentication failure, and unexpected runtime errors.
-* Improve `devsecops menu` so it follows the same command groups.
+- [x] Improve `devsecops menu` so it follows the same command groups.
 
 Acceptance criteria:
 
-* `devsecops --help` is short enough to scan.
-* Every command has an example in help or documentation.
-* JSON output exists for readiness and doctor workflows used by automation.
-* Golden tests protect important help text and command output.
+- [x] `devsecops --help` is short enough to scan.
+- [x] Every command has an example in help or documentation.
+- [x] JSON output exists for readiness and doctor workflows used by automation.
+- [x] Golden tests protect important help text and command output.
 
 ## Milestone 3: Trustworthy Generation And Tests
 

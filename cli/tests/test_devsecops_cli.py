@@ -179,6 +179,108 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("docs/command-inventory.md", help_text)
         self.assertIn("docs/generated-artifacts.md", help_text)
 
+    def test_top_level_help_is_grouped_and_legacy_aliases_are_not_primary_choices(self) -> None:
+        help_text = cli.build_parser().format_help()
+        self.assertIn("{menu,config,doctor,render,github,terraform,snapshot,readiness,report,dashboard,explain}", help_text)
+        self.assertIn("Legacy aliases still work", help_text)
+        self.assertIn("Stable exit codes", help_text)
+        self.assertNotIn("==SUPPRESS==", help_text)
+        self.assertNotIn("gh-doctor           ", help_text)
+        self.assertNotIn("aws-doctor          ", help_text)
+
+    def test_readiness_json_output_contains_checks_and_gaps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.default_config())
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.cmd_readiness(argparse.Namespace(deep=False, format="json"))
+
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(result, 0)
+        self.assertEqual(payload["kind"], "readiness")
+        self.assertIn("checks", payload)
+        self.assertIn("gaps", payload)
+
+    def test_doctor_group_json_and_legacy_alias_share_payload_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.default_config())
+            with patch.object(cli, "repo_root", return_value=root):
+                grouped = io.StringIO()
+                with redirect_stdout(grouped):
+                    grouped_result = cli.main(["doctor", "local", "--format", "json"])
+                legacy = io.StringIO()
+                with redirect_stdout(legacy):
+                    legacy_result = cli.main(["doctor", "--format", "json"])
+
+        grouped_payload = json.loads(grouped.getvalue())
+        legacy_payload = json.loads(legacy.getvalue())
+        self.assertEqual(grouped_result, 0)
+        self.assertEqual(legacy_result, 0)
+        self.assertEqual(grouped_payload["kind"], "doctor-local")
+        self.assertEqual(legacy_payload["kind"], "doctor-local")
+
+    def test_grouped_config_set_updates_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.default_config())
+            with patch.object(cli, "repo_root", return_value=root):
+                with redirect_stdout(io.StringIO()):
+                    result = cli.main(["config", "set", "backend.bucket", "state-bucket"])
+
+            cfg = cli.load_config(root)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(cfg["backend"]["bucket"], "state-bucket")
+
+    def test_grouped_snapshot_list_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.create_snapshot(root, "test", "Test snapshot")
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["snapshot", "list", "--format", "json"])
+
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(result, 0)
+        self.assertEqual(payload["kind"], "snapshots")
+        self.assertEqual(len(payload["snapshots"]), 1)
+
+    def test_grouped_terraform_plan_dispatches_legacy_plan_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "run_plan", return_value=0) as run_plan:
+                result = cli.main(["terraform", "plan", "dev", "--create-workspace"])
+
+        self.assertEqual(result, 0)
+        run_plan.assert_called_once_with(root, "dev", no_init=False, create_workspace=True)
+
+    def test_github_group_status_json_reports_missing_gh_without_failing_non_strict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "command_exists", return_value=False):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["github", "status", "--format", "json"])
+
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(result, 0)
+        self.assertEqual(payload["kind"], "github-actions-status")
+        self.assertIn("error", payload)
+
+    def test_doctor_github_strict_returns_missing_tool_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.default_config())
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "command_exists", return_value=False):
+                with redirect_stdout(io.StringIO()):
+                    result = cli.main(["doctor", "github", "--strict", "--format", "json"])
+
+        self.assertEqual(result, cli.EXIT_MISSING_EXTERNAL_TOOL)
+
     def test_readiness_score_weights_warn_as_half_credit(self) -> None:
         checks = [
             cli.Check("one", "OK", "ok"),
@@ -217,7 +319,7 @@ class DevSecOpsCliTests(unittest.TestCase):
                 with redirect_stdout(buffer):
                     result = cli.cmd_config(argparse.Namespace(config_command="validate"))
 
-        self.assertEqual(result, 1)
+        self.assertEqual(result, cli.EXIT_VALIDATION_FAILED)
         self.assertIn("dev.lambda_timeout", buffer.getvalue())
 
     def test_preset_strict_enables_validation_controls(self) -> None:
@@ -588,7 +690,7 @@ class DevSecOpsCliTests(unittest.TestCase):
                 with redirect_stdout(io.StringIO()):
                     result = cli.cmd_aws_doctor(argparse.Namespace(environment="prod", strict=True))
 
-        self.assertEqual(result, 1)
+        self.assertEqual(result, cli.EXIT_MISSING_EXTERNAL_TOOL)
 
     def test_snapshots_are_listed_newest_first_and_selectable_by_number(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -676,7 +778,7 @@ class DevSecOpsCliTests(unittest.TestCase):
             self.assertEqual(cli.list_snapshots(root), [])
             self.assertIn("Configuration cancelled", buffer.getvalue())
 
-    def test_menu_status_and_main_menu_include_navigation_items(self) -> None:
+    def test_menu_status_and_main_menu_include_grouped_navigation_sections(self) -> None:
         cfg = cli.default_config()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -689,14 +791,39 @@ class DevSecOpsCliTests(unittest.TestCase):
                 cli.print_main_menu(root)
             output = buffer.getvalue()
         self.assertTrue(any("[i] details" in line for line in status))
+        for section in ["Core", "Config", "Diagnostics", "Terraform", "GitHub", "Reference", "Recovery"]:
+            self.assertIn(section, output)
         self.assertIn("[1] Dashboard", output)
-        self.assertIn("[i] details", output)
-        self.assertIn("Readiness gaps", output)
-        self.assertIn("Local", output)
-        self.assertIn("[16] Snapshots / Rollback", output)
-        self.assertIn("[17] AWS doctor", output)
-        self.assertIn("[18] Pipeline composer", output)
+        self.assertIn("[2] Render artifacts", output)
+        self.assertIn("[3] Readiness report", output)
+        self.assertIn("[4] Interactive setup", output)
+        self.assertIn("[5] Apply preset", output)
+        self.assertIn("[6] Show config", output)
+        self.assertIn("[7] Composer", output)
+        self.assertIn("[8] Doctor local/deep", output)
+        self.assertIn("[9] AWS doctor", output)
+        self.assertIn("[10] Readiness details", output)
+        self.assertIn("[11] Bootstrap plan", output)
+        self.assertIn("[12] Terraform plan", output)
+        self.assertIn("[13] Setup commands", output)
+        self.assertIn("[14] GitHub doctor", output)
+        self.assertIn("[15] Actions status", output)
+        self.assertIn("[16] Security controls", output)
+        self.assertIn("[17] Environment table", output)
+        self.assertIn("[18] Snapshots / rollback", output)
         self.assertIn("[0] Exit", output)
+        self.assertNotIn("[i] Readiness details", output)
+
+        item_lines = [line for line in output.splitlines() if line.startswith("  [")]
+        self.assertTrue(item_lines)
+        for line in item_lines:
+            self.assertLessEqual(line.count("["), 3)
+
+    def test_pause_for_menu_clears_screen_before_returning_to_main_menu(self) -> None:
+        with patch("builtins.input", return_value=""), patch.object(cli, "clear_screen") as clear_screen:
+            cli.pause_for_menu()
+
+        clear_screen.assert_called_once()
 
 
 if __name__ == "__main__":

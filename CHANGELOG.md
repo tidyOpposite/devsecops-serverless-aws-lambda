@@ -5,6 +5,10 @@ semantic versioning.
 
 ## Unreleased
 
+No unreleased changes.
+
+## v0.3.0 - 2026-06-06
+
 ### Removed
 
 * Bundled sample workload source, local image build files, and browser client.
@@ -26,6 +30,11 @@ semantic versioning.
   CLI-product first-run path as the README.
 * Recommended first-run workflow now uses `devsecops config new`,
   `config validate`, and `config diff` before rendering.
+* Top-level CLI help now focuses on grouped primary commands while preserving
+  legacy flat aliases.
+* Main menu navigation now clears the terminal when entering sections and when
+  returning to the menu, and menu items are grouped into sections with up to
+  three actions per row.
 
 ### Added
 
@@ -35,6 +44,12 @@ semantic versioning.
   `show`, `validate`, `diff`, `reset`, and `schema`.
 * Config schema export, canonical config diffing, and a migration scaffold for
   future config schema versions.
+* Grouped CLI UX for `doctor`, `github`, `terraform`, and `snapshot`
+  workflows, plus `config set` as the primary config edit command.
+* JSON and compact output modes for readiness and doctor workflows used by
+  automation.
+* Stable CLI exit-code constants for validation, missing tools, auth failures,
+  unexpected runtime errors, and interrupts.
 * Dependency-free terminal CLI with main menu, setup wizard, readiness report,
   render command, Terraform plan wrapper, backend bootstrap helper, and control
   explanations.
