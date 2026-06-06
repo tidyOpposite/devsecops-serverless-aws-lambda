@@ -61,7 +61,7 @@ Gaps that make the project feel raw:
 ## Milestone 0: Stabilize The Product Contract
 
 Target: immediate cleanup before the next feature release.
-Status: implemented in `Unreleased`.
+Status: implemented in `v0.3.0`.
 
 Goals:
 
@@ -89,6 +89,8 @@ Acceptance criteria:
 
 ## Milestone 1: Clean Configuration Workflow
 
+Target release: `v0.3.0`.
+Status: implemented in `v0.3.0`.
 
 Problem: `init`, `set`, `preset`, `compose`, `validate-config`, and `render`
 are useful, but the clean configuration lifecycle is implicit.
@@ -127,6 +129,7 @@ Acceptance criteria:
 ## Milestone 2: CLI UX Consolidation
 
 Target release: `v0.3.0`.
+Status: implemented in `v0.3.0`.
 
 Problem: the command surface is powerful but too wide for a first-time user.
 

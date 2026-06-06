@@ -29,7 +29,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback guard
     tomllib = None  # type: ignore[assignment]
 
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 CONFIG_SCHEMA_VERSION = 1
 CONFIG_FILE = ".devsecops-pipeline.toml"
 EXIT_OK = 0

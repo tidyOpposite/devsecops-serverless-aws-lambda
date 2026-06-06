@@ -7,6 +7,25 @@ semantic versioning.
 
 No unreleased changes.
 
+## v0.4.1 - 2026-06-06
+
+### Fixed
+
+* Avoided the `RuntimeWarning` emitted by `python -m devsecops_cli.main` by
+  making package-level `main` loading lazy.
+* Added tests that keep CLI, package, and root/CLI package versions aligned.
+
+### Changed
+
+* CI jobs now have explicit timeouts to avoid stalled package or Terraform
+  checks holding runners indefinitely.
+* CI now builds root package artifacts before the install smoke test, so
+  packaging failures are caught before release publication.
+* Release packaging now installs `setuptools` and `wheel` explicitly before
+  building artifacts.
+* Roadmap implementation statuses now point to released versions instead of
+  stale `Unreleased` wording.
+
 ## v0.4.0 - 2026-06-06
 
 ### Added

@@ -1,8 +1,14 @@
 """DevSecOps Pipeline Kit CLI package."""
 
-from . import main
-from .main import VERSION
+from importlib import import_module
 
+VERSION = "0.4.1"
 __version__ = VERSION
 
 __all__ = ["VERSION", "__version__", "main"]
+
+
+def __getattr__(name: str):
+    if name == "main":
+        return import_module(".main", __name__)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -1,15 +1,20 @@
 import argparse
 import importlib
+import os
 import tempfile
 import unittest
 import json
 import io
 import subprocess
+import sys
+import tomllib
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+package = importlib.import_module("devsecops_cli")
 cli = importlib.import_module("devsecops_cli.main")
+ROOT_DIR = Path(__file__).resolve().parents[2]
 GOLDEN_DIR = Path(__file__).with_name("golden")
 RENDERED_ARTIFACTS = [
     cli.GENERATED_TFVARS,
@@ -44,7 +49,36 @@ def rendered_artifact_contents(root: Path) -> dict[str, str]:
     return {str(path): (root / path).read_text(encoding="utf-8") for path in RENDERED_ARTIFACTS}
 
 
+def project_version(path: Path) -> str:
+    return tomllib.loads(path.read_text(encoding="utf-8"))["project"]["version"]
+
+
 class DevSecOpsCliTests(unittest.TestCase):
+    def test_version_metadata_is_consistent(self) -> None:
+        self.assertEqual(cli.VERSION, "0.4.1")
+        self.assertEqual(package.VERSION, cli.VERSION)
+        self.assertEqual(package.__version__, cli.VERSION)
+        self.assertEqual(project_version(ROOT_DIR / "pyproject.toml"), cli.VERSION)
+        self.assertEqual(project_version(ROOT_DIR / "cli/pyproject.toml"), cli.VERSION)
+
+    def test_module_execution_does_not_emit_runtime_warning(self) -> None:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(ROOT_DIR / "cli")
+        result = subprocess.run(
+            [sys.executable, "-m", "devsecops_cli.main", "--version"],
+            cwd=ROOT_DIR,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), f"devsecops {cli.VERSION}")
+        self.assertNotIn("RuntimeWarning", result.stderr)
+
     def test_immutable_image_validation(self) -> None:
         self.assertTrue(cli.is_immutable_image("repo.example/app:sha-abc123"))
         self.assertTrue(cli.is_immutable_image("repo.example/app@sha256:" + "a" * 64))

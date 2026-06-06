@@ -448,6 +448,7 @@ curl "$(terraform output -raw api_gateway_health_url)"
 * [Generated artifacts](docs/generated-artifacts.md)
 * [AWS OIDC and IAM policy guidance](AWS_policy.md)
 * [Changelog](CHANGELOG.md)
+* [v0.4.1 release notes](docs/release-v0.4.1.md)
 * [v0.4.0 release notes](docs/release-v0.4.0.md)
 * [v0.3.0 release notes](docs/release-v0.3.0.md)
 * [v0.2.0 release notes](docs/release-v0.2.0.md)
