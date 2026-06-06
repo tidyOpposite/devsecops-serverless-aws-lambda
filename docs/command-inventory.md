@@ -22,6 +22,7 @@ The README quick start and `devsecops --help` use the same first-run path:
 devsecops config new --preset balanced
 devsecops config validate
 devsecops config diff
+devsecops dry-run --image-uri <immutable-ecr-image-uri>
 devsecops render
 devsecops readiness
 devsecops report
@@ -36,7 +37,9 @@ Use `devsecops menu` when you prefer the interactive path.
 | `devsecops menu` | Stable | Interactive CLI | Opens the main terminal menu. Default command when no subcommand is passed. |
 | `devsecops init` | Alias | Configuration | Legacy interactive entry point for creating or updating `.devsecops-pipeline.toml`. Prefer `devsecops config new` for clean non-interactive config generation. |
 | `devsecops readiness` | Stable | Diagnostics | Shows scored readiness gaps and concrete next actions. Supports `--format human\|compact\|json`. |
-| `devsecops render` | Stable | Generation | Writes CLI-owned Terraform and GitHub helper artifacts. |
+| `devsecops dry-run` | Stable | First success | Previews the first-success path without writing files or requiring AWS credentials. |
+| `devsecops preflight` | Stable | First success | Checks Lambda image URI shape, immutability, and region before production deploy. |
+| `devsecops render` | Stable | Generation | Writes CLI-owned Terraform and GitHub helper artifacts. Use `--dry-run` to preview file changes. |
 | `devsecops report` | Stable | Reporting | Writes a CLI-owned Markdown readiness report. |
 | `devsecops dashboard` | Stable | Diagnostics | Prints a one-screen readiness dashboard. |
 | `devsecops doctor` | Stable | Diagnostics | Primary diagnostics group for local, GitHub, AWS, branch, Actions, and all-in-one checks. |
@@ -104,6 +107,9 @@ Use `devsecops menu` when you prefer the interactive path.
 | Reset config | `devsecops config reset --preset minimal` |
 | Config schema | `devsecops config schema --format markdown` |
 | Render artifacts | `devsecops render` |
+| Render dry run | `devsecops render --dry-run` |
+| First-success dry run | `devsecops dry-run --image-uri <immutable-ecr-image-uri>` |
+| Image preflight | `devsecops preflight --image-uri <immutable-ecr-image-uri>` |
 | Readiness | `devsecops readiness --format json` |
 | Local doctor | `devsecops doctor local --deep --format compact` |
 | GitHub doctor | `devsecops doctor github --format json` |

@@ -132,6 +132,7 @@ Recommended first run:
 devsecops config new --preset balanced
 devsecops config validate
 devsecops config diff
+devsecops dry-run --image-uri 123456789012.dkr.ecr.us-east-1.amazonaws.com/devsecops-pipeline-prod-lambda-repo:sha-abc123
 devsecops render
 devsecops readiness
 devsecops report
@@ -174,6 +175,8 @@ devsecops doctor actions --format json
 devsecops doctor all --format compact
 devsecops readiness     # shows what blocks 100% readiness
 devsecops readiness --format json
+devsecops dry-run --image-uri <immutable-ecr-image-uri>
+devsecops preflight --image-uri <immutable-ecr-image-uri>
 
 devsecops github setup  # prints gh commands for repo variables/secrets
 devsecops github setup --apply --deploy-role-arn arn:aws:iam::123456789012:role/deploy
@@ -191,6 +194,7 @@ devsecops snapshot restore --last --dry-run
 devsecops envs          # environment settings table
 devsecops controls      # security controls matrix
 devsecops render        # writes ignored Terraform/GitHub helper artifacts
+devsecops render --dry-run
 devsecops report        # exports Markdown readiness report
 devsecops explain oidc  # explains a security control
 ```
@@ -386,6 +390,9 @@ Recommended branch protection for `main`:
 
 ## Deployment Flow
 
+For a command-by-command walkthrough with expected output, see
+[First successful pipeline](docs/first-successful-pipeline.md).
+
 1. Configure local pipeline state with `devsecops compose`, `init`, `set`, or
    `preset`.
 2. Render generated artifacts with `devsecops render`.
@@ -410,6 +417,18 @@ Recommended branch protection for `main`:
 The supplied image must be compatible with Lambda container package type and
 must be published before the production deploy workflow runs. Use immutable tags
 or image digests; do not use `latest`.
+
+Validate the image URI locally before writing it into config:
+
+```bash
+devsecops preflight --image-uri 123456789012.dkr.ecr.us-east-1.amazonaws.com/devsecops-pipeline-prod-lambda-repo:sha-abc123
+```
+
+The bring-your-own-image path is documented in
+[Bring your own Lambda image](docs/bring-your-own-image.md). Keep example or
+real workload source in a separate repository; use
+[Separate example workload template](docs/example-workload-template.md) as the
+repository contract.
 
 If `ENABLE_HTTP_VALIDATION=true`, the image must handle API Gateway HTTP API
 events and return a successful response for `GET /health`. If
@@ -446,8 +465,12 @@ curl "$(terraform output -raw api_gateway_health_url)"
 * [Product roadmap](ROADMAP.md)
 * [Command inventory](docs/command-inventory.md)
 * [Generated artifacts](docs/generated-artifacts.md)
+* [First successful pipeline](docs/first-successful-pipeline.md)
+* [Bring your own Lambda image](docs/bring-your-own-image.md)
+* [Separate example workload template](docs/example-workload-template.md)
 * [AWS OIDC and IAM policy guidance](AWS_policy.md)
 * [Changelog](CHANGELOG.md)
+* [v0.5.0 release notes](docs/release-v0.5.0.md)
 * [v0.4.1 release notes](docs/release-v0.4.1.md)
 * [v0.4.0 release notes](docs/release-v0.4.0.md)
 * [v0.3.0 release notes](docs/release-v0.3.0.md)

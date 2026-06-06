@@ -55,7 +55,7 @@ def project_version(path: Path) -> str:
 
 class DevSecOpsCliTests(unittest.TestCase):
     def test_version_metadata_is_consistent(self) -> None:
-        self.assertEqual(cli.VERSION, "0.4.1")
+        self.assertEqual(cli.VERSION, "0.5.0")
         self.assertEqual(package.VERSION, cli.VERSION)
         self.assertEqual(package.__version__, cli.VERSION)
         self.assertEqual(project_version(ROOT_DIR / "pyproject.toml"), cli.VERSION)
@@ -220,6 +220,58 @@ class DevSecOpsCliTests(unittest.TestCase):
             self.assertTrue(report.exists())
             self.assertIn("# DevSecOps Pipeline Readiness Report", report.read_text(encoding="utf-8"))
 
+    def test_dry_run_preview_does_not_write_files_or_require_aws(self) -> None:
+        image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/devsecops-pipeline-prod-lambda-repo:sha-abc123"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "command_exists", return_value=False):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["dry-run", "--preset", "balanced", "--image-uri", image_uri])
+
+            output = buffer.getvalue()
+            self.assertFalse((root / cli.CONFIG_FILE).exists())
+            self.assertFalse((root / cli.GENERATED_TFVARS).exists())
+
+        self.assertEqual(result, 0)
+        self.assertIn("No files changed", output)
+        self.assertIn("AWS credentials are not required", output)
+        self.assertIn("Files that would be rendered", output)
+
+    def test_render_dry_run_previews_without_writing_generated_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.default_config())
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["render", "--dry-run"])
+
+            self.assertFalse((root / cli.GENERATED_TFVARS).exists())
+
+        self.assertEqual(result, 0)
+        self.assertIn("Dry run only. No files changed.", buffer.getvalue())
+        self.assertIn(str(cli.GENERATED_TFVARS), buffer.getvalue())
+
+    def test_preflight_checks_image_shape_immutability_and_region(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = cli.default_config()
+            cfg["aws_region"] = "us-east-1"
+            cli.write_config(root, cfg)
+            bad_image = "123456789012.dkr.ecr.eu-west-1.amazonaws.com/app:latest"
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["preflight", "--image-uri", bad_image, "--format", "json"])
+
+        payload = json.loads(buffer.getvalue())
+        by_name = {check["name"]: check for check in payload["checks"]}
+        self.assertEqual(result, cli.EXIT_VALIDATION_FAILED)
+        self.assertEqual(by_name["Lambda image shape"]["status"], "OK")
+        self.assertEqual(by_name["Lambda image immutability"]["status"], "FAIL")
+        self.assertEqual(by_name["Lambda image region"]["status"], "FAIL")
+
     def test_nested_set_and_parse(self) -> None:
         cfg = cli.default_config()
         current = cli.nested_get(cfg, "environments.dev.lambda_timeout")
@@ -276,6 +328,7 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("CLI product", help_text)
         self.assertIn("Product boundary:", help_text)
         self.assertIn("devsecops config new --preset balanced", help_text)
+        self.assertIn("devsecops dry-run --image-uri <immutable-ecr-image-uri>", help_text)
         self.assertIn("devsecops config validate", help_text)
         self.assertIn("devsecops config diff", help_text)
         self.assertIn("devsecops render", help_text)
@@ -286,7 +339,7 @@ class DevSecOpsCliTests(unittest.TestCase):
 
     def test_top_level_help_is_grouped_and_legacy_aliases_are_not_primary_choices(self) -> None:
         help_text = cli.build_parser().format_help()
-        self.assertIn("{menu,config,doctor,render,github,terraform,snapshot,readiness,report,dashboard,explain}", help_text)
+        self.assertIn("{menu,config,dry-run,preflight,doctor,render,github,terraform,snapshot,readiness,report,dashboard,explain}", help_text)
         self.assertIn("Legacy aliases still work", help_text)
         self.assertIn("Stable exit codes", help_text)
         self.assertNotIn("==SUPPRESS==", help_text)
@@ -415,6 +468,19 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0], "Lambda image URI")
         self.assertIn("devsecops set lambda_image_uri", rows[0][3])
+        self.assertIn("docs/troubleshooting.md#lambda-image-uri-is-missing-or-invalid", rows[0][3])
+
+    def test_doctor_compact_output_links_troubleshooting_for_gaps(self) -> None:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            cli.print_compact_checks(
+                [cli.Check("Lambda image region", "FAIL", "Image region `eu-west-1` does not match aws_region `us-east-1`.")],
+                title="Doctor Local",
+            )
+
+        output = buffer.getvalue()
+        self.assertIn("Fix:", output)
+        self.assertIn("docs/troubleshooting.md#lambda-image-uri-is-missing-or-invalid", output)
 
     def test_config_validation_catches_bad_values(self) -> None:
         cfg = cli.default_config()

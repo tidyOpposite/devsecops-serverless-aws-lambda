@@ -187,29 +187,30 @@ Acceptance criteria:
 ## Milestone 4: First Successful Pipeline Path
 
 Target release: `v0.5.0`.
+Status: implemented in `v0.5.0`.
 
 Problem: users need a direct, measurable route from install to one successful
 pipeline run.
 
 Deliverables:
 
-* A "first successful pipeline" guide with exact commands and expected
+- [x] A "first successful pipeline" guide with exact commands and expected
   outputs.
-* A documented bring-your-own-image path for `LAMBDA_IMAGE_URI`.
-* A separate example workload repository or template, not bundled into this
+- [x] A documented bring-your-own-image path for `LAMBDA_IMAGE_URI`.
+- [x] A separate example workload repository or template, not bundled into this
   repository.
-* Preflight checks for Lambda container image shape, immutability, and region
+- [x] Preflight checks for Lambda container image shape, immutability, and region
   mismatch.
-* A dry-run mode that explains what would be rendered or checked before files
+- [x] A dry-run mode that explains what would be rendered or checked before files
   change.
-* Troubleshooting entries linked from readiness and doctor failures.
+- [x] Troubleshooting entries linked from readiness and doctor failures.
 
 Acceptance criteria:
 
-* A user can complete a documented dry run without AWS credentials.
-* A user with AWS, GitHub, and a valid Lambda image can follow one guide to a
+- [x] A user can complete a documented dry run without AWS credentials.
+- [x] A user with AWS, GitHub, and a valid Lambda image can follow one guide to a
   successful production workflow dispatch.
-* The CLI explains the next action whenever readiness is below 100%.
+- [x] The CLI explains the next action whenever readiness is below 100%.
 
 ## Milestone 5: Operational Reliability
 

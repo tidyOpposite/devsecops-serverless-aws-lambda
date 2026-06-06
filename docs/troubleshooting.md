@@ -85,6 +85,52 @@ Rollback restores only CLI-owned local files such as `.devsecops-pipeline.toml`,
 
 ## CLI Configuration
 
+### Local config is missing
+
+Create a clean local source config:
+
+```bash
+devsecops config new --preset balanced
+devsecops config validate
+```
+
+For a no-write preview first:
+
+```bash
+devsecops dry-run --preset balanced
+```
+
+### Project files are missing
+
+Readiness expects the tracked Terraform module and GitHub workflow files to be
+present:
+
+```text
+terraform/main.tf
+terraform/modules/lambda/main.tf
+.github/workflows/deploy.yml
+```
+
+Restore those files from the repository before running `devsecops render`,
+Terraform plans, or production workflow dispatch.
+
+### Config validation fails
+
+Run config validation and fix the reported key:
+
+```bash
+devsecops config validate
+devsecops config show --format toml
+devsecops config set <key> <value>
+```
+
+Then rerun:
+
+```bash
+devsecops config validate
+devsecops render --dry-run
+```
+
 ### Readiness says backend bucket is missing
 
 Set a real backend bucket through the CLI and render generated artifacts:
@@ -105,17 +151,28 @@ devsecops bootstrap --apply
 `devsecops bootstrap --apply` only when the target AWS account and backend
 names are correct.
 
-### Readiness says Lambda image URI is missing
+### Lambda image URI is missing or invalid
 
 Set an immutable Lambda container image:
 
 ```bash
+devsecops preflight --image-uri 123456789012.dkr.ecr.us-east-1.amazonaws.com/app:sha-a1b2c3
 devsecops set lambda_image_uri 123456789012.dkr.ecr.us-east-1.amazonaws.com/app:sha-a1b2c3 --render
 devsecops readiness
 ```
 
 The production workflow rejects `latest` and `bootstrap` because rollback and
 auditability depend on stable image identity.
+
+If preflight reports a region mismatch, publish or select an image in the same
+region as `aws_region`, then rerun:
+
+```bash
+devsecops preflight --image-uri <immutable-ecr-image-uri>
+```
+
+See [Bring your own Lambda image](bring-your-own-image.md) for the image
+contract.
 
 ### Update one setting without rerunning the wizard
 
@@ -176,6 +233,28 @@ devsecops gh-doctor
 
 `devsecops gh-doctor` checks repository variables and secret names, but it
 never prints secret values.
+
+### GitHub repository variables or secrets are missing
+
+Generate and review setup commands:
+
+```bash
+devsecops github setup --write
+```
+
+Apply repository variables and provided secrets:
+
+```bash
+devsecops github setup --apply \
+  --deploy-role-arn arn:aws:iam::<account-id>:role/<deploy-role> \
+  --plan-role-arn arn:aws:iam::<account-id>:role/<plan-role>
+```
+
+Then verify:
+
+```bash
+devsecops doctor github --strict
+```
 
 ### Branch protection doctor reports missing checks
 
@@ -251,6 +330,44 @@ devsecops aws-doctor --environment prod
 If identity works but resource checks fail, confirm `aws_region`,
 `backend.region`, and the selected `--environment` match the account where the
 pipeline was deployed.
+
+## Terraform Diagnostics
+
+### Terraform CLI is not found
+
+Install Terraform and confirm it is on `PATH`:
+
+```bash
+terraform version
+devsecops doctor local --format compact
+```
+
+### Terraform validation fails
+
+Run the same local validation command used by the CLI and CI:
+
+```bash
+terraform -chdir=terraform init -backend=false -input=false -no-color
+terraform -chdir=terraform validate -no-color
+```
+
+Fix the reported Terraform file, then rerun:
+
+```bash
+devsecops doctor local --deep --format compact
+```
+
+## Git Diagnostics
+
+### Git or branch readiness fails
+
+Production deploy workflow dispatch must run from `main`:
+
+```bash
+git branch --show-current
+git switch main
+devsecops readiness
+```
 
 ## GitHub OIDC
 

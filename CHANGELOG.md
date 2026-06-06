@@ -7,6 +7,21 @@ semantic versioning.
 
 No unreleased changes.
 
+## v0.5.0 - 2026-06-06
+
+### Added
+
+* First successful pipeline guide with exact commands and expected output.
+* Bring-your-own Lambda image documentation and a separate workload template
+  contract that keeps workload source outside this repository.
+* `devsecops preflight` for local Lambda image URI shape, immutability, and
+  region checks.
+* `devsecops dry-run` for a no-write, no-AWS-credentials first-success
+  preview.
+* `devsecops render --dry-run` for previewing generated artifact changes
+  without writing files.
+* Troubleshooting links in readiness next actions.
+
 ## v0.4.1 - 2026-06-06
 
 ### Fixed

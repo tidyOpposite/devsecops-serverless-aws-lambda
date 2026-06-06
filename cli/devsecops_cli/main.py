@@ -29,7 +29,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback guard
     tomllib = None  # type: ignore[assignment]
 
 
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 CONFIG_SCHEMA_VERSION = 1
 CONFIG_FILE = ".devsecops-pipeline.toml"
 EXIT_OK = 0
@@ -1873,6 +1873,82 @@ def is_immutable_image(image_uri: str) -> bool:
     return tag not in {"latest", "bootstrap"}
 
 
+def image_uri_from_config_or_override(cfg: dict[str, Any], image_uri: str | None = None) -> str:
+    return str(image_uri if image_uri is not None else cfg["lambda_image_uri"]).strip()
+
+
+def collect_image_preflight_checks(
+    cfg: dict[str, Any],
+    image_uri: str | None = None,
+    env_name: str = "prod",
+) -> list[Check]:
+    checks: list[Check] = []
+    resolved_uri = image_uri_from_config_or_override(cfg, image_uri)
+    image_ref = parse_ecr_image_uri(resolved_uri) if resolved_uri else None
+    expected_shape = "123456789012.dkr.ecr.<region>.amazonaws.com/<repository>:<immutable-tag> or @sha256:<digest>"
+
+    checks.append(
+        Check(
+            "Lambda image URI",
+            "OK" if resolved_uri else "FAIL",
+            resolved_uri if resolved_uri else "Set lambda_image_uri or pass --image-uri.",
+        )
+    )
+    checks.append(
+        Check(
+            "Lambda image shape",
+            "OK" if image_ref else ("FAIL" if resolved_uri else "WARN"),
+            f"ECR image URI for repository `{image_ref.repository}`."
+            if image_ref
+            else f"Expected {expected_shape}."
+            if resolved_uri
+            else "Cannot inspect shape until an image URI is set.",
+        )
+    )
+    checks.append(
+        Check(
+            "Lambda image immutability",
+            "OK" if is_immutable_image(resolved_uri) else ("FAIL" if resolved_uri else "WARN"),
+            "Uses an immutable tag or digest."
+            if is_immutable_image(resolved_uri)
+            else "Use an immutable tag or digest; do not use latest or bootstrap."
+            if resolved_uri
+            else "Cannot inspect immutability until an image URI is set.",
+        )
+    )
+
+    if image_ref:
+        expected_region = str(cfg["aws_region"])
+        checks.append(
+            Check(
+                "Lambda image region",
+                "OK" if image_ref.region == expected_region else "FAIL",
+                image_ref.region
+                if image_ref.region == expected_region
+                else f"Image region `{image_ref.region}` does not match aws_region `{expected_region}`.",
+            )
+        )
+        expected_repository = expected_ecr_repository_name(cfg, env_name)
+        checks.append(
+            Check(
+                "Lambda image repository",
+                "OK" if image_ref.repository == expected_repository else "WARN",
+                image_ref.repository
+                if image_ref.repository == expected_repository
+                else (
+                    f"Configured image uses `{image_ref.repository}`; Terraform also creates `{expected_repository}`. "
+                    "This is allowed for bring-your-own images if the deploy role can pull it."
+                ),
+                scored=False,
+            )
+        )
+    else:
+        checks.append(Check("Lambda image region", "WARN", "Cannot compare image region until the URI matches ECR shape."))
+        checks.append(Check("Lambda image repository", "WARN", "Cannot compare repository until the URI matches ECR shape.", scored=False))
+
+    return checks
+
+
 def collect_checks(root: Path, cfg: dict[str, Any], deep: bool = False) -> list[Check]:
     checks: list[Check] = []
     config_exists = config_path(root).exists()
@@ -1928,6 +2004,10 @@ def collect_checks(root: Path, cfg: dict[str, Any], deep: bool = False) -> list[
         image_status = "WARN"
         image_detail = "Required before production deploy."
     checks.append(Check("Lambda image URI", image_status, image_detail))
+    if image_uri:
+        for preflight_check in collect_image_preflight_checks(cfg):
+            if preflight_check.name in {"Lambda image shape", "Lambda image region"}:
+                checks.append(preflight_check)
 
     backend_bucket = cfg["backend"]["bucket"]
     backend_ready = backend_bucket and not backend_bucket.startswith("replace-with")
@@ -2060,9 +2140,9 @@ def readiness_score(checks: list[Check]) -> int:
     return round(points / (len(scored) * 2) * 100)
 
 
-def readiness_action_for_check(check: Check) -> str:
+def readiness_action_detail_for_check(check: Check) -> str:
     if check.name == "Local config":
-        return "Run `devsecops init` or use menu option 2."
+        return "Run `devsecops config new --preset balanced` or open `devsecops menu`."
     if check.name == "Project name":
         return "Set a lowercase 3-32 character project name with `devsecops set project_name <name>`."
     if check.name == "Project files":
@@ -2092,7 +2172,13 @@ def readiness_action_for_check(check: Check) -> str:
     if check.name == "Configured ECR image":
         return "Publish the configured ECR image or update `lambda_image_uri` to an existing immutable image."
     if check.name == "Lambda image URI":
-        return "Set an immutable image with `devsecops set lambda_image_uri <image-uri> --render`."
+        return "Set `LAMBDA_IMAGE_URI` to an immutable image with `devsecops set lambda_image_uri <image-uri> --render`."
+    if check.name == "Lambda image shape":
+        return "Use an ECR Lambda image URI such as `123456789012.dkr.ecr.us-east-1.amazonaws.com/app:sha-abc123`."
+    if check.name == "Lambda image immutability":
+        return "Use an immutable tag or digest, then run `devsecops preflight --image-uri <image-uri>`."
+    if check.name == "Lambda image region":
+        return "Publish or select an image in the same region as `aws_region`, then rerun `devsecops preflight`."
     if check.name == "Backend bucket":
         return "Set `backend.bucket` to a real S3 state bucket and run `devsecops render`."
     if check.name == "Config schema":
@@ -2106,6 +2192,45 @@ def readiness_action_for_check(check: Check) -> str:
     if check.name == "AWS identity":
         return "Configure AWS credentials and verify with `aws sts get-caller-identity`."
     return check.detail
+
+
+def troubleshooting_anchor_for_check(check: Check) -> str:
+    name = check.name
+    if name == "Local config":
+        return "#local-config-is-missing"
+    if name in {"Project name", "Config schema"} or name.startswith("Config ") or "." in name:
+        return "#config-validation-fails"
+    if name == "Project files":
+        return "#project-files-are-missing"
+    if name == "`terraform` CLI":
+        return "#terraform-cli-is-not-found"
+    if name in {"`aws` CLI", "AWS CLI", "AWS identity"}:
+        return "#aws-doctor-cannot-inspect-resources"
+    if name in {"Backend bucket", "State bucket", "Lock table", "Backend lock table"}:
+        return "#readiness-says-backend-bucket-is-missing"
+    if name in {
+        "Lambda image URI",
+        "Lambda image shape",
+        "Lambda image immutability",
+        "Lambda image region",
+        "Configured ECR image",
+    }:
+        return "#lambda-image-uri-is-missing-or-invalid"
+    if name == "`git` CLI" or name == "Git branch":
+        return "#git-or-branch-readiness-fails"
+    if name.startswith("GitHub") or name.endswith("secret") or name.endswith("variable"):
+        return "#github-repository-variables-or-secrets-are-missing"
+    if name.startswith("Branch `") or name.startswith("Required check") or name == "Protection details":
+        return "#branch-protection-doctor-reports-missing-checks"
+    if name in {"Terraform validate", "Bootstrap validate"}:
+        return "#terraform-validation-fails"
+    return "#start-here"
+
+
+def readiness_action_for_check(check: Check) -> str:
+    action = readiness_action_detail_for_check(check)
+    anchor = troubleshooting_anchor_for_check(check)
+    return f"{action} See `docs/troubleshooting.md{anchor}`."
 
 
 def readiness_gap_rows(checks: list[Check]) -> list[list[str]]:
@@ -2297,6 +2422,8 @@ def print_checks(checks: list[Check]) -> None:
         else:
             label = warn("WARN")
         print(f"{check.name.ljust(name_width)} {label.ljust(12)} {check.detail}")
+        if check.scored and check.status != "OK":
+            print(f"{''.ljust(name_width)} {'Fix'.ljust(12)} {readiness_action_for_check(check)}")
 
 
 def check_to_dict(check: Check) -> dict[str, Any]:
@@ -2359,6 +2486,7 @@ def print_compact_checks(checks: list[Check], title: str | None = None) -> None:
     for check in gaps:
         label = fail(check.status) if check.status == "FAIL" else warn(check.status)
         print(f"{label} {check.name}: {check.detail}")
+        print(f"  Fix: {readiness_action_for_check(check)}")
 
 
 def strict_exit_code(checks: list[Check], strict: bool = False, fail_on_warn: bool = False) -> int:
@@ -2436,6 +2564,10 @@ def markdown_report(cfg: dict[str, Any], checks: list[Check]) -> str:
 
 def next_actions(cfg: dict[str, Any], checks: list[Check]) -> list[str]:
     actions: list[str] = []
+    for check_name, status, _detail, action in readiness_gap_rows(checks):
+        actions.append(f"- {check_name} ({status}): {action}")
+    if actions:
+        return actions
     if not cfg["lambda_image_uri"]:
         actions.append("- Set `LAMBDA_IMAGE_URI` to an immutable Lambda container image.")
     if cfg["backend"]["bucket"].startswith("replace-with"):
@@ -3104,20 +3236,107 @@ def cmd_init(args: argparse.Namespace) -> int:
     return run_init(repo_root(), force=args.force, defaults=args.defaults)
 
 
-def run_render(root: Path, snapshot: bool = True) -> int:
+def cmd_preflight(args: argparse.Namespace) -> int:
+    root = repo_root()
     cfg = load_config(root)
-    dist = root / DIST_DIR
-    dist.mkdir(parents=True, exist_ok=True)
-    if snapshot:
-        snapshot_before_change(root, "render", "Before rendering Terraform and GitHub helper artifacts.")
+    checks = collect_image_preflight_checks(
+        cfg,
+        image_uri=getattr(args, "image_uri", None),
+        env_name=getattr(args, "environment", "prod"),
+    )
+    emit_check_output(
+        "Preflight",
+        checks,
+        output_format=getattr(args, "format", "human"),
+        context={"environment": getattr(args, "environment", "prod"), "aws_region": cfg["aws_region"]},
+    )
+    return EXIT_VALIDATION_FAILED if any(check.status == "FAIL" for check in checks) else EXIT_OK
 
-    outputs = {
+
+def dry_run_config(root: Path, preset_name: str, image_uri: str | None = None) -> tuple[dict[str, Any], str]:
+    if config_path(root).exists():
+        cfg = load_config(root)
+        source = str(CONFIG_FILE)
+    else:
+        cfg = clean_config(preset_name)
+        source = f"clean `{preset_name}` preset (not written)"
+    if image_uri:
+        cfg["lambda_image_uri"] = image_uri
+    return cfg, source
+
+
+def cmd_dry_run(args: argparse.Namespace) -> int:
+    root = repo_root()
+    env_name = getattr(args, "environment", "prod")
+    cfg, source = dry_run_config(root, getattr(args, "preset", "balanced"), getattr(args, "image_uri", None))
+    outputs = render_outputs(root, cfg)
+    image_checks = collect_image_preflight_checks(cfg, env_name=env_name)
+    readiness_checks = collect_checks(root, cfg, deep=False)
+
+    draw_box(
+        "First Successful Pipeline Dry Run",
+        [
+            "No files changed.",
+            "AWS credentials are not required for this dry run.",
+            f"Config source: {source}",
+            f"Environment target: {env_name}",
+        ],
+    )
+    print_render_plan(root, outputs, title="Files that would be rendered")
+    print()
+    print_checks(image_checks)
+    print()
+    print_gap_summary(readiness_checks, limit=8)
+    print()
+    print(info("Next documented path: docs/first-successful-pipeline.md"))
+    return EXIT_OK
+
+
+def render_outputs(root: Path, cfg: dict[str, Any]) -> dict[Path, str]:
+    dist = root / DIST_DIR
+    return {
         root / GENERATED_TFVARS: terraform_tfvars(cfg),
         dist / "backend.tf": backend_tf(cfg),
         dist / "github-variables.env": github_variables(cfg),
         dist / "github-setup.sh": github_setup_script(cfg),
         dist / "setup-checklist.md": checklist(cfg),
     }
+
+
+def display_path(root: Path, path: Path) -> str:
+    return str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
+
+
+def render_plan_rows(root: Path, outputs: dict[Path, str]) -> list[list[str]]:
+    rows = []
+    for path, content in outputs.items():
+        if not path.exists():
+            state = "create"
+        elif path.read_text(encoding="utf-8") == content:
+            state = "no change"
+        else:
+            state = "update"
+        rows.append([display_path(root, path), state, f"{len(content.splitlines())} lines"])
+    return rows
+
+
+def print_render_plan(root: Path, outputs: dict[Path, str], title: str = "Render Plan") -> None:
+    draw_table(["File", "Action", "Size"], render_plan_rows(root, outputs), title=title)
+
+
+def run_render(root: Path, snapshot: bool = True, dry_run: bool = False) -> int:
+    cfg = load_config(root)
+    outputs = render_outputs(root, cfg)
+    if dry_run:
+        print(info("Dry run only. No files changed."))
+        print_render_plan(root, outputs)
+        return 0
+
+    dist = root / DIST_DIR
+    dist.mkdir(parents=True, exist_ok=True)
+    if snapshot:
+        snapshot_before_change(root, "render", "Before rendering Terraform and GitHub helper artifacts.")
+
     for path, content in outputs.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -3128,7 +3347,7 @@ def run_render(root: Path, snapshot: bool = True) -> int:
 
 
 def cmd_render(args: argparse.Namespace) -> int:
-    return run_render(repo_root())
+    return run_render(repo_root(), dry_run=getattr(args, "dry_run", False))
 
 
 def cmd_readiness(args: argparse.Namespace) -> int:
@@ -3912,6 +4131,7 @@ def build_parser() -> argparse.ArgumentParser:
               devsecops config new --preset balanced
               devsecops config validate
               devsecops config diff
+              devsecops dry-run --image-uri <immutable-ecr-image-uri>
               devsecops render
               devsecops readiness
               devsecops report
@@ -3935,7 +4155,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     subparsers = parser.add_subparsers(
         dest="command",
-        metavar="{menu,config,doctor,render,github,terraform,snapshot,readiness,report,dashboard,explain}",
+        metavar="{menu,config,dry-run,preflight,doctor,render,github,terraform,snapshot,readiness,report,dashboard,explain}",
     )
     parser.set_defaults(func=cmd_menu)
 
@@ -4014,7 +4234,20 @@ def build_parser() -> argparse.ArgumentParser:
     readiness_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     readiness_parser.set_defaults(func=cmd_readiness)
 
+    dry_run_parser = subparsers.add_parser("dry-run", help="Preview the first-success path without writing files or requiring AWS.")
+    dry_run_parser.add_argument("--preset", choices=PRESET_ORDER, default="balanced", help="Preset to preview when no local config exists.")
+    dry_run_parser.add_argument("--image-uri", help="Immutable ECR image URI to preview without writing it to config.")
+    dry_run_parser.add_argument("--environment", choices=ENVIRONMENTS, default="prod", help="Environment target for image naming checks.")
+    dry_run_parser.set_defaults(func=cmd_dry_run)
+
+    preflight_parser = subparsers.add_parser("preflight", help="Run local preflight checks for the Lambda image before deploy.")
+    preflight_parser.add_argument("--image-uri", help="Image URI to check. Defaults to lambda_image_uri from local config.")
+    preflight_parser.add_argument("--environment", choices=ENVIRONMENTS, default="prod", help="Environment target for image naming checks.")
+    preflight_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    preflight_parser.set_defaults(func=cmd_preflight)
+
     render_parser = subparsers.add_parser("render", help="Render CLI-owned Terraform/GitHub helper artifacts.")
+    render_parser.add_argument("--dry-run", action="store_true", help="Preview generated files without writing them.")
     render_parser.set_defaults(func=cmd_render)
 
     report_parser = subparsers.add_parser("report", help="Export a CLI-owned Markdown readiness report.")
