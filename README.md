@@ -1,5 +1,11 @@
 # DevSecOps Pipeline Kit CLI for AWS Lambda
 
+![Stage: early alpha](https://img.shields.io/badge/stage-early_alpha-orange)
+![Development: active](https://img.shields.io/badge/development-active-brightgreen)
+![Releases: frequent](https://img.shields.io/badge/releases-frequent-blue)
+![Security controls: evolving](https://img.shields.io/badge/security_controls-evolving-blue)
+![API stability: 0.x](https://img.shields.io/badge/API_stability-0.x_changes_expected-yellow)
+
 DevSecOps Pipeline Kit is a terminal-first product for configuring,
 validating, and operating a secure AWS Lambda deployment pipeline. The CLI is
 the primary user interface; Terraform, GitHub Actions, AWS OIDC, scanners, and
@@ -12,6 +18,26 @@ recover from local configuration changes with snapshots.
 This repository does not include sample Lambda application source code. The
 pipeline expects a prebuilt immutable Lambda container image through
 `LAMBDA_IMAGE_URI`.
+
+## Development Status
+
+This project is in early alpha and is changing quickly. The CLI is usable for
+experimentation, review, demos, and guided pipeline setup, but it should not be
+treated as a stable platform yet.
+
+Expect frequent releases while the project moves toward `v1.0`. Command names,
+configuration fields, generated artifacts, operational diagnostics, and
+security controls may change across `0.x` versions as the product boundary gets
+sharper. Pin a release tag for repeatable demos or evaluations, read the
+[Changelog](CHANGELOG.md) before upgrading, and review generated Terraform and
+GitHub artifacts before applying them in real AWS accounts.
+
+Security is an active development area. GitHub OIDC, immutable image inputs,
+Terraform validation, IaC scanning, optional Snyk, optional `/health`
+validation, optional DAST, and rollback behavior are already present, but the
+controls, defaults, and audit outputs are still evolving. Follow the
+[Roadmap](ROADMAP.md) to see what is implemented, what is next, and what is not
+yet considered stable.
 
 ## Product Contract
 

@@ -5,7 +5,11 @@ semantic versioning.
 
 ## Unreleased
 
-No unreleased changes.
+### Added
+
+* README development-status callout and repository badges that make the early
+  alpha stage, active development cadence, and evolving security controls clear
+  to new visitors.
 
 ## v0.6.0 - 2026-06-07
 
