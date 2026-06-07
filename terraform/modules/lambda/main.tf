@@ -1,6 +1,6 @@
 locals {
   function_name = "${var.name_prefix}-lambda"
-  image_uri     = var.lambda_image_uri != "" ? var.lambda_image_uri : "${var.ecr_repository_url}:bootstrap"
+  image_uri     = var.lambda_image_uri
 }
 
 resource "aws_sqs_queue" "lambda_dlq" {
@@ -117,6 +117,13 @@ resource "aws_lambda_function" "workload" {
     aws_cloudwatch_log_group.lambda_log_group,
     aws_iam_role_policy.lambda_execution_policy,
   ]
+
+  lifecycle {
+    precondition {
+      condition     = var.lambda_image_uri != "" && !can(regex(":(latest|bootstrap)$", lower(var.lambda_image_uri)))
+      error_message = "lambda_image_uri must be set to an immutable image URI before planning or applying the Lambda workload."
+    }
+  }
 
   tags = var.tags
 }

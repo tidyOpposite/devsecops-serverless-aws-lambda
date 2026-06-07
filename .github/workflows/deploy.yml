@@ -26,8 +26,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
-  pull-requests: write
 
 concurrency:
   group: terraform-${{ github.event.inputs.environment || 'dev' }}-${{ github.event.inputs.mode || github.event_name }}
@@ -52,6 +50,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
@@ -82,16 +82,31 @@ jobs:
     name: Terraform Plan
     runs-on: ubuntu-latest
     needs: security-and-validate
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'plan')
+    if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'plan')
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require separate AWS plan role
+        env:
+          PLAN_ROLE_ARN: ${{ secrets.AWS_PLAN_ROLE_TO_ASSUME_ARN }}
+        run: |
+          if [ -z "${PLAN_ROLE_ARN}" ]; then
+            echo "Set AWS_PLAN_ROLE_TO_ASSUME_ARN to a least-privilege plan role. Terraform plan does not fall back to the deploy role." >&2
+            exit 1
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_TO_ASSUME_ARN || secrets.AWS_ROLE_TO_ASSUME_ARN }}
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_TO_ASSUME_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Set up Terraform
@@ -166,6 +181,9 @@ jobs:
     needs: security-and-validate
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'deploy' && github.event.inputs.environment == 'prod' && github.ref == 'refs/heads/main'
     environment: ${{ vars.PROD_APPROVAL_ENVIRONMENT || 'prod' }}
+    permissions:
+      contents: read
+      id-token: write
     env:
       DEPLOY_ENVIRONMENT: prod
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
@@ -173,6 +191,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Require Lambda image URI
         run: |

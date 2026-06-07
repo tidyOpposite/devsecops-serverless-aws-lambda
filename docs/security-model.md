@@ -48,13 +48,14 @@ flowchart LR
 | Committing local operational data | `.devsecops-pipeline.toml`, `.devsecops/`, generated tfvars, and `dist/` artifacts are ignored by Git. |
 | Misconfigured pipeline hidden from operator | `devsecops readiness`, `[i] details`, `doctor`, and reports show scored readiness gaps and concrete fix actions. |
 | Static cloud credentials leaked from CI | GitHub Actions uses OIDC and short-lived STS credentials; no AWS access keys are stored in the repo. |
+| Overprivileged PR planning | Terraform plan workflows require `AWS_PLAN_ROLE_TO_ASSUME_ARN`, skip forked PRs, and do not fall back to the deploy role. |
 | Unauthorized Terraform apply | Workflow applies only on manual `workflow_dispatch` deploy runs from `main`; PRs and direct pushes do not apply. Protect `main` with required checks. |
 | Concurrent Terraform state writes | S3 backend uses DynamoDB state locking. Bootstrap stack creates the lock table. |
 | Insecure Terraform configuration | Trivy scans Terraform modules for high and critical IaC findings. |
 | Vulnerable container image | Snyk can scan the configured Lambda image before deploy when `SNYK_TOKEN` is configured. |
-| Mutable or accidental image deployment | Deploy workflow requires `LAMBDA_IMAGE_URI` and rejects `latest` and `bootstrap` tags. |
+| Mutable or accidental image deployment | Deploy workflow and Terraform require an explicit immutable ECR `LAMBDA_IMAGE_URI` and reject `latest` and `bootstrap` tags. |
 | Failed or unhealthy Lambda deployment | Deploy job captures the previous image URI and rolls Lambda back if apply or enabled validation fails. |
-| Runtime data exposure | Workload data is stored in a private S3 bucket with public access blocked. |
+| Runtime data exposure | Workload data is stored in a private S3 bucket with public access blocked and non-TLS requests denied. |
 | Weak encryption at rest | Workload data stores use KMS where compatible. |
 | Missing dynamic testing | OWASP ZAP baseline can run after deploy against the live API when `ENABLE_DAST=true`. |
 
@@ -80,5 +81,5 @@ flowchart LR
   Terraform state backups, or cloud rollback strategy.
 * Lambda DLQ only captures asynchronous invocation failures. API Gateway
   synchronous errors are returned to the client and logged in CloudWatch.
-* PR Terraform plan requires an AWS role. Use a lower-privilege
-  `AWS_PLAN_ROLE_TO_ASSUME_ARN` when accepting external contributions.
+* PR Terraform plan requires a lower-privilege `AWS_PLAN_ROLE_TO_ASSUME_ARN`.
+  Forked PRs intentionally do not receive AWS-backed plans.

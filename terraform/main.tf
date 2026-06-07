@@ -34,7 +34,6 @@ module "lambda" {
   source = "./modules/lambda"
 
   aws_region         = data.aws_region.current.name
-  ecr_repository_url = module.ecr.repository_url
   environment        = local.environment
   kms_key_arn        = module.kms.key_arn
   lambda_image_uri   = var.lambda_image_uri

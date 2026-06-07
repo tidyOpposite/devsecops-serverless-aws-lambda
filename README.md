@@ -94,11 +94,11 @@ flowchart LR
 | Readiness diagnostics | `devsecops readiness`, `[i] details`, `doctor`, `gh-doctor`, `actions-status`, and `branch-doctor` explain what blocks a deploy-ready pipeline. |
 | AWS diagnostics | `devsecops aws-doctor` checks AWS identity, backend bucket, lock table, ECR, Lambda execution role, Lambda, API Gateway, CloudWatch logs, and configured ECR image existence. |
 | Environments | `dev`, `staging`, and `prod` are mapped to Terraform workspaces. Resource names include the environment, for example `devsecops-pipeline-prod-lambda`. |
-| Terraform state | Remote S3 backend with DynamoDB locking. `terraform/bootstrap` creates both prerequisites. |
+| Terraform state | Remote S3 backend with DynamoDB locking. `terraform/bootstrap` creates both prerequisites with encrypted state and public access blocked. |
 | IaC structure | Root Terraform composes modules in `terraform/modules`: `kms`, `storage`, `ecr`, `lambda`, and `api-gateway`. |
-| PR workflow | Pull requests run Terraform formatting, validation, Trivy IaC scanning, and publish a Terraform plan as a PR comment plus artifact. |
+| PR workflow | Pull requests run Terraform formatting, validation, and Trivy IaC scanning. Same-repository PRs also run an AWS-backed Terraform plan with the plan role and publish a PR comment plus artifact. |
 | Production deploy | `terraform apply` runs only from manual `workflow_dispatch` with `mode=deploy`, `environment=prod`, and the workflow run started from `main`. Direct pushes do not start Actions. |
-| Image deployment | The deploy workflow requires `LAMBDA_IMAGE_URI` and rejects mutable `latest` or `bootstrap` tags. |
+| Image deployment | The deploy workflow and Terraform require an explicit immutable `LAMBDA_IMAGE_URI` and reject mutable `latest` or `bootstrap` tags. |
 | Container scanning | Snyk can scan the configured image when `SNYK_TOKEN` is present. |
 | Rollback | The deploy job captures the previous Lambda image URI and restores it automatically if apply or enabled validation fails. |
 | Optional validation | `/health` smoke test and OWASP ZAP baseline DAST can be enabled with repository variables. |
@@ -403,7 +403,7 @@ Required repository secrets:
 | Secret | Purpose |
 | --- | --- |
 | `AWS_ROLE_TO_ASSUME_ARN` | Deployment role used by manual production deploy runs from `main`. |
-| `AWS_PLAN_ROLE_TO_ASSUME_ARN` | Required when `use_separate_aws_plan_role=true`; otherwise PR plans fall back to the deploy role. |
+| `AWS_PLAN_ROLE_TO_ASSUME_ARN` | Required least-privilege role for Terraform plan workflows. Plans do not fall back to the deploy role. |
 | `AWS_REGION` | AWS region, for example `us-east-1`. |
 | `SNYK_TOKEN` | Required when `ENABLE_SNYK_SCAN=true`; otherwise optional. |
 
@@ -422,14 +422,17 @@ Recommended branch protection for `main`:
 
 * Require pull requests before merging.
 * Require `Security and Terraform Validate` and `Terraform Plan` to pass.
-* Use pull requests for automatic validation. Direct pushes to `main` do not
-  run this workflow.
+* Use pull requests from branches in this repository for automatic AWS-backed
+  Terraform plans. Pull requests from forks still run validation, but the
+  AWS-backed plan job is skipped.
+* Direct pushes to `main` do not run this workflow.
 
 ## Pipeline Behavior
 
 | Event | Environment | Terraform action | Deployment |
 | --- | --- | --- | --- |
-| Pull request to `main` | `dev` | `plan` only | No apply, no AWS mutation except workspace selection if missing. |
+| Pull request to `main` from same repository | `dev` | `plan` only with `AWS_PLAN_ROLE_TO_ASSUME_ARN` | No apply. |
+| Pull request to `main` from fork | n/a | validation only | No AWS credentials. |
 | Push to `main` | n/a | none | No workflow run. Maintainer pushes do not consume Actions minutes. |
 | Manual `workflow_dispatch`, `mode=plan` | selected `dev/staging/prod` | `plan` only | No apply. |
 | Manual `workflow_dispatch`, `mode=deploy`, `environment=prod`, branch `main` | `prod` | `apply` | Scan configured image when enabled, deploy Lambda, optionally validate HTTP and DAST, rollback on failure. |
@@ -447,7 +450,9 @@ For a command-by-command walkthrough with expected output, see
 4. Validate Terraform formatting and configuration in GitHub Actions on pull
    requests or manual runs.
 5. Run Trivy IaC scanning.
-6. Require an immutable `LAMBDA_IMAGE_URI` on production deploys.
+6. Require an immutable `LAMBDA_IMAGE_URI` on production deploys; Terraform also
+   prevents planning or applying the Lambda workload without an explicit
+   immutable image URI.
 7. Optionally scan the configured Lambda image with Snyk.
 8. Apply KMS and ECR bootstrap targets so supporting resources exist.
 9. Capture the previously deployed Lambda image URI.
@@ -463,7 +468,7 @@ For a command-by-command walkthrough with expected output, see
 
 The supplied image must be compatible with Lambda container package type and
 must be published before the production deploy workflow runs. Use immutable tags
-or image digests; do not use `latest`.
+or image digests; do not use `latest` or `bootstrap`.
 
 Validate the image URI locally before writing it into config:
 
@@ -519,6 +524,7 @@ devsecops health
 * [Operational runbooks](docs/runbooks/README.md)
 * [AWS OIDC and IAM policy guidance](AWS_policy.md)
 * [Changelog](CHANGELOG.md)
+* [v0.6.1 release notes](docs/release-v0.6.1.md)
 * [v0.6.0 release notes](docs/release-v0.6.0.md)
 * [v0.5.0 release notes](docs/release-v0.5.0.md)
 * [v0.4.1 release notes](docs/release-v0.4.1.md)

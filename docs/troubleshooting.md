@@ -437,8 +437,9 @@ Check the IAM role trust policy:
 
 * `token.actions.githubusercontent.com:aud` must equal `sts.amazonaws.com`.
 * For deploys, `sub` should include `repo:<owner>/<repo>:ref:refs/heads/main`.
-* For PR plans, use a separate lower-privilege role and allow the relevant
-  pull request subject pattern only if you accept that risk.
+* For PR plans, use `AWS_PLAN_ROLE_TO_ASSUME_ARN`; plan workflows do not fall
+  back to the deploy role.
+* Pull requests from forks intentionally do not run AWS-backed plans.
 * Confirm the workflow has `permissions: id-token: write`.
 
 Then re-run:
@@ -453,6 +454,10 @@ devsecops branch-doctor
 The plan role needs S3 access to the state bucket and DynamoDB access to the
 lock table. It also needs read permissions for resources Terraform refreshes.
 Use `AWS_policy.md` as the IAM review guide, then re-run the failing workflow.
+
+If the pull request comes from a fork, the AWS-backed Terraform plan job is
+skipped by design. Run the plan from a trusted branch or use a reviewed manual
+`workflow_dispatch` plan.
 
 ## Terraform Backend
 

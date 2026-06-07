@@ -55,7 +55,7 @@ def project_version(path: Path) -> str:
 
 class DevSecOpsCliTests(unittest.TestCase):
     def test_version_metadata_is_consistent(self) -> None:
-        self.assertEqual(cli.VERSION, "0.6.0")
+        self.assertEqual(cli.VERSION, "0.6.1")
         self.assertEqual(package.VERSION, cli.VERSION)
         self.assertEqual(package.__version__, cli.VERSION)
         self.assertEqual(project_version(ROOT_DIR / "pyproject.toml"), cli.VERSION)
@@ -643,11 +643,14 @@ class DevSecOpsCliTests(unittest.TestCase):
         cfg = cli.default_config()
         cfg["lambda_image_uri"] = "123456789012.dkr.ecr.us-east-1.amazonaws.com/app:sha-abc123"
         cfg["enable_snyk_scan"] = True
+        cfg["use_separate_aws_plan_role"] = False
         script = cli.github_setup_script(cfg)
         self.assertIn("gh variable set PROJECT_NAME", script)
         self.assertIn("gh variable set ENABLE_SNYK_SCAN", script)
         self.assertIn("gh variable set PROD_APPROVAL_ENVIRONMENT", script)
         self.assertIn("gh secret set AWS_ROLE_TO_ASSUME_ARN", script)
+        self.assertIn("gh secret set AWS_PLAN_ROLE_TO_ASSUME_ARN", script)
+        self.assertNotIn("Optional: gh secret set AWS_PLAN_ROLE_TO_ASSUME_ARN", script)
         self.assertIn("gh secret set SNYK_TOKEN", script)
         self.assertIn("sha-abc123", script)
 
@@ -753,8 +756,37 @@ class DevSecOpsCliTests(unittest.TestCase):
         cfg["use_separate_aws_plan_role"] = False
         cfg["enable_snyk_scan"] = True
         checks = cli.github_secret_checks(cfg, {"AWS_REGION": "", "AWS_ROLE_TO_ASSUME_ARN": ""})
-        self.assertTrue(any(check.name.endswith("AWS_PLAN_ROLE_TO_ASSUME_ARN") and check.status == "INFO" for check in checks))
+        self.assertTrue(any(check.name.endswith("AWS_PLAN_ROLE_TO_ASSUME_ARN") and check.status == "WARN" for check in checks))
         self.assertTrue(any(check.name.endswith("SNYK_TOKEN") and check.status == "WARN" for check in checks))
+
+    def test_workflow_security_hardening_contract(self) -> None:
+        deploy_workflow = (ROOT_DIR / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+        ci_workflow = (ROOT_DIR / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        release_workflow = (ROOT_DIR / ".github/workflows/release.yml").read_text(encoding="utf-8")
+
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", deploy_workflow)
+        self.assertIn("Require separate AWS plan role", deploy_workflow)
+        self.assertIn("role-to-assume: ${{ secrets.AWS_PLAN_ROLE_TO_ASSUME_ARN }}", deploy_workflow)
+        self.assertNotIn("AWS_PLAN_ROLE_TO_ASSUME_ARN || secrets.AWS_ROLE_TO_ASSUME_ARN", deploy_workflow)
+        self.assertIn("id-token: write", deploy_workflow)
+        self.assertIn("pull-requests: write", deploy_workflow)
+
+        for workflow in [deploy_workflow, ci_workflow, release_workflow]:
+            self.assertIn("persist-credentials: false", workflow)
+
+    def test_terraform_security_hardening_contract(self) -> None:
+        variables_tf = (ROOT_DIR / "terraform/variables.tf").read_text(encoding="utf-8")
+        module_variables_tf = (ROOT_DIR / "terraform/modules/lambda/variables.tf").read_text(encoding="utf-8")
+        lambda_tf = (ROOT_DIR / "terraform/modules/lambda/main.tf").read_text(encoding="utf-8")
+        storage_tf = (ROOT_DIR / "terraform/modules/storage/main.tf").read_text(encoding="utf-8")
+
+        self.assertIn("lambda_image_uri must be empty for validation-only runs or an immutable ECR image URI", variables_tf)
+        self.assertIn("lambda_image_uri must be empty for validation-only runs or an immutable ECR image URI", module_variables_tf)
+        self.assertIn("precondition", lambda_tf)
+        self.assertIn("latest|bootstrap", lambda_tf)
+        self.assertNotIn(":bootstrap", lambda_tf)
+        self.assertIn("DenyInsecureTransport", storage_tf)
+        self.assertIn("aws:SecureTransport", storage_tf)
 
     def test_branch_protection_checks_required_statuses(self) -> None:
         protection = {

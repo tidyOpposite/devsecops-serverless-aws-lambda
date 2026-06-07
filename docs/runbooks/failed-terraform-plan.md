@@ -21,6 +21,8 @@ gh run view <run-id> --log-failed
 ## Common Causes
 
 * `AWS_PLAN_ROLE_TO_ASSUME_ARN` is missing or cannot read Terraform state.
+* The pull request is from a fork, so the AWS-backed plan job is skipped by
+  design.
 * The S3 backend bucket or DynamoDB lock table is missing.
 * The selected workspace does not exist and was not created.
 * Generated Terraform variables are stale.

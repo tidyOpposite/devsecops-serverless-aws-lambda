@@ -3,11 +3,6 @@ variable "aws_region" {
   type        = string
 }
 
-variable "ecr_repository_url" {
-  description = "ECR repository URL used when lambda_image_uri is not provided."
-  type        = string
-}
-
 variable "environment" {
   description = "Deployment environment."
   type        = string
@@ -21,6 +16,14 @@ variable "kms_key_arn" {
 variable "lambda_image_uri" {
   description = "Immutable ECR image URI for the Lambda function."
   type        = string
+
+  validation {
+    condition = var.lambda_image_uri == "" || (
+      can(regex("^\\d{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/.+(?::[^:@]+|@sha256:[A-Fa-f0-9]{64})$", var.lambda_image_uri))
+      && !can(regex(":(latest|bootstrap)$", lower(var.lambda_image_uri)))
+    )
+    error_message = "lambda_image_uri must be empty for validation-only runs or an immutable ECR image URI; latest/bootstrap tags are not allowed."
+  }
 }
 
 variable "lambda_memory_size" {

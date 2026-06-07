@@ -35,6 +35,26 @@ resource "aws_s3_bucket_public_access_block" "log_bucket_pab" {
 
 data "aws_iam_policy_document" "s3_log_bucket_policy_doc" {
   statement {
+    sid    = "DenyInsecureTransport"
+    effect = "Deny"
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    actions = ["s3:*"]
+    resources = [
+      aws_s3_bucket.log_bucket.arn,
+      "${aws_s3_bucket.log_bucket.arn}/*",
+    ]
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+
+  statement {
     sid    = "AllowLogDelivery"
     effect = "Allow"
     principals {
@@ -90,6 +110,33 @@ resource "aws_s3_bucket_public_access_block" "output_bucket_pab" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+data "aws_iam_policy_document" "output_bucket_policy_doc" {
+  statement {
+    sid    = "DenyInsecureTransport"
+    effect = "Deny"
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    actions = ["s3:*"]
+    resources = [
+      aws_s3_bucket.output_bucket.arn,
+      "${aws_s3_bucket.output_bucket.arn}/*",
+    ]
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "output_bucket_policy" {
+  bucket = aws_s3_bucket.output_bucket.id
+  policy = data.aws_iam_policy_document.output_bucket_policy_doc.json
 }
 
 resource "aws_s3_bucket_logging" "output_bucket_logging" {

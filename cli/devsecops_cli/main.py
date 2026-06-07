@@ -31,7 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback guard
     tomllib = None  # type: ignore[assignment]
 
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 CONFIG_SCHEMA_VERSION = 1
 CONFIG_FILE = ".devsecops-pipeline.toml"
 EXIT_OK = 0
@@ -923,7 +923,6 @@ def github_variables(cfg: dict[str, Any]) -> str:
 
 
 def checklist(cfg: dict[str, Any]) -> str:
-    plan_role_label = "`AWS_PLAN_ROLE_TO_ASSUME_ARN`" if cfg["use_separate_aws_plan_role"] else "`AWS_PLAN_ROLE_TO_ASSUME_ARN` (optional, deploy role fallback)"
     snyk_label = "`SNYK_TOKEN`" if cfg["enable_snyk_scan"] else "`SNYK_TOKEN` (optional)"
     return textwrap.dedent(
         f"""\
@@ -934,7 +933,7 @@ def checklist(cfg: dict[str, Any]) -> str:
         ## GitHub Secrets
 
         - [ ] `AWS_ROLE_TO_ASSUME_ARN`
-        - [ ] {plan_role_label}
+        - [ ] `AWS_PLAN_ROLE_TO_ASSUME_ARN`
         - [ ] `AWS_REGION` = `{cfg["aws_region"]}`
         - [ ] {snyk_label}
 
@@ -963,11 +962,6 @@ def checklist(cfg: dict[str, Any]) -> str:
 
 
 def github_setup_script(cfg: dict[str, Any]) -> str:
-    plan_role_command = (
-        'gh secret set AWS_PLAN_ROLE_TO_ASSUME_ARN --body "<plan-role-arn>"'
-        if cfg["use_separate_aws_plan_role"]
-        else '# Optional: gh secret set AWS_PLAN_ROLE_TO_ASSUME_ARN --body "<plan-role-arn>"'
-    )
     snyk_token_command = (
         'gh secret set SNYK_TOKEN --body "<snyk-token>"'
         if cfg["enable_snyk_scan"]
@@ -989,7 +983,7 @@ def github_setup_script(cfg: dict[str, Any]) -> str:
         "",
         f'gh secret set AWS_REGION --body {shell_quote(cfg["aws_region"])}',
         'gh secret set AWS_ROLE_TO_ASSUME_ARN --body "<deploy-role-arn>"',
-        plan_role_command,
+        'gh secret set AWS_PLAN_ROLE_TO_ASSUME_ARN --body "<plan-role-arn>"',
         snyk_token_command,
         "",
     ]
@@ -1012,9 +1006,7 @@ def github_expected_variables(cfg: dict[str, Any]) -> dict[str, str]:
 
 
 def required_github_secrets(cfg: dict[str, Any]) -> list[str]:
-    required = list(BASE_REQUIRED_GH_SECRETS)
-    if cfg["use_separate_aws_plan_role"]:
-        required.append(PLAN_ROLE_SECRET)
+    required = [*BASE_REQUIRED_GH_SECRETS, PLAN_ROLE_SECRET]
     if cfg["enable_snyk_scan"]:
         required.append(SNYK_TOKEN_SECRET)
     return required
@@ -1022,8 +1014,6 @@ def required_github_secrets(cfg: dict[str, Any]) -> list[str]:
 
 def optional_github_secrets(cfg: dict[str, Any]) -> list[str]:
     optional: list[str] = []
-    if not cfg["use_separate_aws_plan_role"]:
-        optional.append(PLAN_ROLE_SECRET)
     if not cfg["enable_snyk_scan"]:
         optional.append(SNYK_TOKEN_SECRET)
     return optional
@@ -2091,8 +2081,8 @@ def apply_github_setup(root: Path, cfg: dict[str, Any], args: argparse.Namespace
         print(warn("Skipping AWS_ROLE_TO_ASSUME_ARN; pass --deploy-role-arn to set it."))
     if args.plan_role_arn:
         secrets["AWS_PLAN_ROLE_TO_ASSUME_ARN"] = args.plan_role_arn
-    elif cfg["use_separate_aws_plan_role"]:
-        print(warn("Skipping AWS_PLAN_ROLE_TO_ASSUME_ARN; pass --plan-role-arn to set it."))
+    else:
+        print(warn("Skipping AWS_PLAN_ROLE_TO_ASSUME_ARN; pass --plan-role-arn because Terraform plan no longer falls back to the deploy role."))
     if args.snyk_token:
         secrets["SNYK_TOKEN"] = args.snyk_token
     elif cfg["enable_snyk_scan"]:
@@ -2315,10 +2305,10 @@ def collect_checks(root: Path, cfg: dict[str, Any], deep: bool = False) -> list[
     checks.append(
         Check(
             "Separate AWS plan role",
-            "OK" if cfg["use_separate_aws_plan_role"] else "INFO",
-            "AWS_PLAN_ROLE_TO_ASSUME_ARN is required."
+            "OK" if cfg["use_separate_aws_plan_role"] else "WARN",
+            "AWS_PLAN_ROLE_TO_ASSUME_ARN is required; deploy role fallback is disabled."
             if cfg["use_separate_aws_plan_role"]
-            else "Plan jobs fall back to the deploy role.",
+            else "Enable this control; workflows still require AWS_PLAN_ROLE_TO_ASSUME_ARN and do not fall back to the deploy role.",
             scored=False,
         )
     )
@@ -2835,7 +2825,9 @@ def next_actions(cfg: dict[str, Any], checks: list[Check]) -> list[str]:
     if cfg["enable_snyk_scan"]:
         actions.append("- Configure `SNYK_TOKEN` so the enabled container scan can run.")
     if cfg["use_separate_aws_plan_role"]:
-        actions.append("- Configure `AWS_PLAN_ROLE_TO_ASSUME_ARN` for lower-privilege Terraform plans.")
+        actions.append("- Configure `AWS_PLAN_ROLE_TO_ASSUME_ARN`; Terraform plan workflows do not fall back to the deploy role.")
+    else:
+        actions.append("- Enable separate AWS plan role and configure `AWS_PLAN_ROLE_TO_ASSUME_ARN`; deploy-role fallback is disabled.")
     if not cfg["enable_http_validation"]:
         actions.append("- Enable `/health` validation after the workload implements that route.")
     if not cfg["enable_dast"]:
@@ -2935,7 +2927,7 @@ def control_rows(cfg: dict[str, Any]) -> list[list[str]]:
     return [
         ["GitHub OIDC", "ON", "Deploy and plan roles use short-lived AWS credentials."],
         ["Prod approval", approval_status, f"Deploy job uses `{prod_approval_environment(cfg)}` GitHub environment."],
-        ["Separate plan role", plan_role_status, "PR plans use a separate AWS role when configured."],
+        ["Separate plan role", plan_role_status, "Terraform plan workflows require `AWS_PLAN_ROLE_TO_ASSUME_ARN`; deploy-role fallback is disabled."],
         ["Terraform state lock", "ON", f"DynamoDB table: {cfg['backend']['lock_table']}"],
         ["IaC scan", "ON", "Trivy config scan in GitHub Actions."],
         ["Immutable image", image_status, "LAMBDA_IMAGE_URI must avoid latest/bootstrap."],

@@ -27,8 +27,9 @@ not create AWS IAM roles for you.
 | `AWS_PLAN_ROLE_TO_ASSUME_ARN` | Pull request and manual plan workflows | Read Terraform state, acquire state lock, refresh resources, and produce plans. |
 | `AWS_ROLE_TO_ASSUME_ARN` | Manual production deploy workflow from `main` | Apply Terraform, read configured images for optional scanning, and perform rollback. |
 
-Use separate roles where possible. The plan role should not be able to mutate
-workload resources beyond Terraform backend locking.
+Use separate roles. The workflow requires `AWS_PLAN_ROLE_TO_ASSUME_ARN` for
+Terraform plans and does not fall back to the deploy role. The plan role should
+not be able to mutate workload resources beyond Terraform backend locking.
 
 ## OIDC Provider
 
@@ -65,8 +66,9 @@ Replace placeholders with your account, owner, and repository names.
 ```
 
 For PR plans, create a separate trust policy scoped to the pull request subject
-patterns you are willing to trust. Be careful with public forks because PR code
-can modify workflow behavior.
+patterns you are willing to trust. The bundled workflow skips AWS-backed
+Terraform plans for pull requests from forks; keep that guard unless you have a
+separate review and sandbox strategy for untrusted contributions.
 
 After creating the roles, run:
 
@@ -78,9 +80,9 @@ devsecops gh-setup --apply \
 devsecops gh-doctor
 ```
 
-If `devsecops compose` is run with "Use separate AWS plan role?" set to `no`,
-the generated GitHub setup treats `AWS_PLAN_ROLE_TO_ASSUME_ARN` as optional and
-the workflow falls back to `AWS_ROLE_TO_ASSUME_ARN` for plan jobs.
+`AWS_PLAN_ROLE_TO_ASSUME_ARN` is required even if older local config or presets
+have `use_separate_aws_plan_role=false`. That config value is retained for
+readiness posture display, but deploy-role fallback is disabled.
 
 ## Backend Access
 

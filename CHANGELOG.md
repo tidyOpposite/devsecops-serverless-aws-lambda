@@ -5,11 +5,28 @@ semantic versioning.
 
 ## Unreleased
 
+No unreleased changes.
+
+## v0.6.1 - 2026-06-07
+
 ### Added
 
 * README development-status callout and repository badges that make the early
   alpha stage, active development cadence, and evolving security controls clear
   to new visitors.
+
+### Security
+
+* GitHub Actions now use narrower job-level permissions and checkout steps no
+  longer persist repository credentials.
+* Terraform plan workflows require `AWS_PLAN_ROLE_TO_ASSUME_ARN` and no longer
+  fall back to the deployment role.
+* Pull requests from forked repositories no longer run the AWS-backed Terraform
+  plan job.
+* Terraform now rejects mutable Lambda image tags and prevents planning or
+  applying the Lambda workload without an explicit immutable image URI.
+* Workload and access-log S3 buckets now deny non-TLS requests with bucket
+  policies.
 
 ## v0.6.0 - 2026-06-07
 
