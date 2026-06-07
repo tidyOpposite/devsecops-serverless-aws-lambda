@@ -7,6 +7,26 @@ semantic versioning.
 
 No unreleased changes.
 
+## v0.6.0 - 2026-06-07
+
+### Added
+
+* Stronger GitHub Actions status output with failed step summaries, strict
+  failure mode, next actions, and linked runbooks.
+* `devsecops health` for validating the deployed `/health` endpoint outside
+  GitHub Actions.
+* `devsecops aws outputs` for read-only inspection of deployed Lambda, API
+  Gateway, and CloudWatch output values.
+* Milestone 5 runbooks for failed Terraform plan, failed apply, failed
+  validation, missing images, and failed deployment rollback.
+
+### Changed
+
+* `devsecops readiness --strict` now supports CI-friendly non-zero exits when
+  readiness is below 100%.
+* Local snapshot restore output now explicitly distinguishes local CLI-owned
+  file recovery from cloud Lambda deployment rollback.
+
 ## v0.5.0 - 2026-06-06
 
 ### Added

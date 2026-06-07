@@ -175,8 +175,11 @@ devsecops doctor actions --format json
 devsecops doctor all --format compact
 devsecops readiness     # shows what blocks 100% readiness
 devsecops readiness --format json
+devsecops readiness --strict --format compact
 devsecops dry-run --image-uri <immutable-ecr-image-uri>
 devsecops preflight --image-uri <immutable-ecr-image-uri>
+devsecops health --url https://abc123.execute-api.us-east-1.amazonaws.com/health
+devsecops aws outputs --environment prod --format json
 
 devsecops github setup  # prints gh commands for repo variables/secrets
 devsecops github setup --apply --deploy-role-arn arn:aws:iam::123456789012:role/deploy
@@ -248,7 +251,25 @@ devsecops rollback --to <number-or-id>
 Rollback restores only the local files managed by the CLI, such as
 `.devsecops-pipeline.toml`, `terraform/generated.auto.tfvars`, and generated
 files under `dist/devsecops/`. Before a rollback is applied, the CLI creates a
-new safety snapshot of the current state.
+new safety snapshot of the current state. It does not change AWS Lambda,
+Terraform state, GitHub Actions, or deployed traffic. Cloud deployment rollback
+is handled by the production GitHub Actions workflow when apply or validation
+fails.
+
+## Operational Diagnostics
+
+After a deploy, inspect the live AWS surface without mutating resources:
+
+```bash
+devsecops aws outputs --environment prod
+devsecops health
+devsecops health --url https://abc123.execute-api.us-east-1.amazonaws.com/health
+devsecops github status --format compact --strict
+```
+
+`github status` and `doctor actions` show failed jobs, failed steps, concrete
+next actions, and runbook links. Use `readiness --strict` in CI when any scored
+gap should fail the command.
 
 The `set` command supports non-interactive configuration for scripts and quick
 edits:
@@ -454,6 +475,7 @@ Health check, when the workload implements `/health`:
 
 ```bash
 curl "$(terraform output -raw api_gateway_health_url)"
+devsecops health
 ```
 
 ## Reference Documents
@@ -468,8 +490,10 @@ curl "$(terraform output -raw api_gateway_health_url)"
 * [First successful pipeline](docs/first-successful-pipeline.md)
 * [Bring your own Lambda image](docs/bring-your-own-image.md)
 * [Separate example workload template](docs/example-workload-template.md)
+* [Operational runbooks](docs/runbooks/README.md)
 * [AWS OIDC and IAM policy guidance](AWS_policy.md)
 * [Changelog](CHANGELOG.md)
+* [v0.6.0 release notes](docs/release-v0.6.0.md)
 * [v0.5.0 release notes](docs/release-v0.5.0.md)
 * [v0.4.1 release notes](docs/release-v0.4.1.md)
 * [v0.4.0 release notes](docs/release-v0.4.0.md)

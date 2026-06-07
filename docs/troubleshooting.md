@@ -13,8 +13,12 @@ devsecops dashboard --mode compact
 devsecops dashboard --watch --interval 10
 devsecops tui
 devsecops readiness
+devsecops readiness --strict --format compact
 devsecops doctor
 devsecops doctor --deep
+devsecops github status --format compact
+devsecops aws outputs --environment prod
+devsecops health
 ```
 
 Use `[i] details` from the main menu or `devsecops readiness` to see only the
@@ -82,6 +86,9 @@ devsecops rollback --to <number-or-id>
 
 Rollback restores only CLI-owned local files such as `.devsecops-pipeline.toml`,
 `terraform/generated.auto.tfvars`, and generated files under `dist/devsecops/`.
+It does not change AWS Lambda, Terraform state, GitHub Actions, or deployed
+traffic. For cloud rollback diagnostics, use
+[`failed-rollback`](runbooks/failed-rollback.md).
 
 ## CLI Configuration
 
@@ -283,7 +290,21 @@ devsecops actions-status
 ```
 
 `actions-status` uses `gh run list` and, for failed runs, `gh run view` to show
-failed job names.
+failed job names, failed step names, next actions, and runbook links. For a
+failed deployment, start with:
+
+```bash
+devsecops github status --format compact --strict
+gh run view <run-id> --log-failed
+```
+
+Common runbooks:
+
+* [Failed Terraform plan](runbooks/failed-terraform-plan.md)
+* [Failed Terraform apply](runbooks/failed-terraform-apply.md)
+* [Failed validation](runbooks/failed-validation.md)
+* [Missing Lambda image](runbooks/missing-image.md)
+* [Failed deployment rollback](runbooks/failed-rollback.md)
 
 ## AWS Diagnostics
 
@@ -293,6 +314,7 @@ Run:
 
 ```bash
 devsecops aws-doctor --environment prod
+devsecops aws outputs --environment prod
 ```
 
 AWS Doctor checks:
@@ -331,6 +353,19 @@ If identity works but resource checks fail, confirm `aws_region`,
 `backend.region`, and the selected `--environment` match the account where the
 pipeline was deployed.
 
+### Inspect deployed Lambda and API Gateway outputs
+
+Run:
+
+```bash
+devsecops aws outputs --environment prod
+devsecops aws outputs --environment prod --format json
+```
+
+This is read-only. It reports the expected Lambda function name, current Lambda
+state, deployed image URI when AWS exposes it, API Gateway invoke URL,
+`/health` URL, and CloudWatch log group details.
+
 ## Terraform Diagnostics
 
 ### Terraform CLI is not found
@@ -356,6 +391,31 @@ Fix the reported Terraform file, then rerun:
 ```bash
 devsecops doctor local --deep --format compact
 ```
+
+For workflow failures, use the
+[failed validation runbook](runbooks/failed-validation.md).
+
+### Terraform plan fails
+
+Start with:
+
+```bash
+devsecops github status --format compact
+devsecops terraform plan prod --create-workspace
+```
+
+Then follow [failed Terraform plan](runbooks/failed-terraform-plan.md).
+
+### Terraform apply fails
+
+Start with:
+
+```bash
+devsecops github status --format compact
+devsecops aws outputs --environment prod
+```
+
+Then follow [failed Terraform apply](runbooks/failed-terraform-apply.md).
 
 ## Git Diagnostics
 
@@ -465,6 +525,15 @@ use the ECR repository created by this Terraform stack, create the repository
 first with a plan/apply or publish the image from an upstream workflow after ECR
 exists.
 
+Run:
+
+```bash
+devsecops preflight --image-uri <immutable-ecr-image-uri>
+devsecops aws outputs --environment prod
+```
+
+Then follow [missing Lambda image](runbooks/missing-image.md).
+
 ### Snyk cannot scan a private ECR image
 
 Confirm the deploy role can call `ecr:GetAuthorizationToken`,
@@ -478,6 +547,9 @@ Pipeline rollback requires an existing previous Lambda image URI. On the first
 ever deployment there is nothing to roll back to. This is separate from CLI
 snapshot rollback, which only restores local CLI-owned files.
 
+Use [failed deployment rollback](runbooks/failed-rollback.md) when the workflow
+attempted rollback but the deployed Lambda image still looks wrong.
+
 ### Health check returns 500
 
 Health validation is optional and runs only when
@@ -488,6 +560,16 @@ Health validation is optional and runs only when
 * CloudWatch Logs for the Lambda function do not show handler, permission, or
   environment errors.
 * The Lambda execution role has the AWS permissions required by the workload.
+
+Run the same check outside GitHub Actions:
+
+```bash
+devsecops health --url <health-url>
+devsecops health
+```
+
+Then follow [failed validation](runbooks/failed-validation.md) if the endpoint
+still returns a non-success response.
 
 ## Scanners
 

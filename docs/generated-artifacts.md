@@ -54,8 +54,9 @@ copy or adapt the backend block intentionally.
 
 ## Rollback Boundary
 
-`devsecops rollback` restores only local CLI-owned files from snapshots. It
-does not roll back a deployed Lambda function in AWS.
+`devsecops rollback` and `devsecops snapshot restore` restore only local
+CLI-owned files from snapshots. They do not roll back a deployed Lambda
+function in AWS, Terraform state, GitHub Actions, or live traffic.
 
 Cloud deployment rollback is handled by the GitHub Actions production workflow
 when a deployment or enabled validation step fails. Keep these two rollback
@@ -64,3 +65,7 @@ paths separate:
 * Local rollback: restore CLI-managed config and generated files.
 * Cloud rollback: restore the previous Lambda image during a failed production
   deployment workflow.
+
+Use `devsecops aws outputs`, `devsecops health`, and
+`devsecops github status` to inspect cloud deployment state before deciding
+whether the GitHub Actions deployment rollback path needs investigation.

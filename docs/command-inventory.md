@@ -36,9 +36,10 @@ Use `devsecops menu` when you prefer the interactive path.
 | --- | --- | --- | --- |
 | `devsecops menu` | Stable | Interactive CLI | Opens the main terminal menu. Default command when no subcommand is passed. |
 | `devsecops init` | Alias | Configuration | Legacy interactive entry point for creating or updating `.devsecops-pipeline.toml`. Prefer `devsecops config new` for clean non-interactive config generation. |
-| `devsecops readiness` | Stable | Diagnostics | Shows scored readiness gaps and concrete next actions. Supports `--format human\|compact\|json`. |
+| `devsecops readiness` | Stable | Diagnostics | Shows scored readiness gaps and concrete next actions. Supports `--strict` and `--format human\|compact\|json`. |
 | `devsecops dry-run` | Stable | First success | Previews the first-success path without writing files or requiring AWS credentials. |
 | `devsecops preflight` | Stable | First success | Checks Lambda image URI shape, immutability, and region before production deploy. |
+| `devsecops health` | Stable | Operations | Validates the deployed `/health` endpoint outside GitHub Actions. Uses Terraform output unless `--url` is provided. |
 | `devsecops render` | Stable | Generation | Writes CLI-owned Terraform and GitHub helper artifacts. Use `--dry-run` to preview file changes. |
 | `devsecops report` | Stable | Reporting | Writes a CLI-owned Markdown readiness report. |
 | `devsecops dashboard` | Stable | Diagnostics | Prints a one-screen readiness dashboard. |
@@ -47,8 +48,11 @@ Use `devsecops menu` when you prefer the interactive path.
 | `devsecops doctor github` | Stable | GitHub | Checks GitHub CLI, repository variables, and repository secrets. |
 | `devsecops doctor aws` | Stable | AWS | Checks AWS identity, backend, and deployed resources. |
 | `devsecops doctor branch` | Stable | GitHub | Checks branch protection and required checks. |
-| `devsecops doctor actions` | Stable | GitHub | Shows recent GitHub Actions runs and failed job summaries. |
+| `devsecops doctor actions` | Stable | GitHub | Shows recent GitHub Actions runs, failed jobs, failed steps, next actions, and runbook links. |
 | `devsecops doctor all` | Stable | Diagnostics | Runs local, GitHub, branch, and AWS checks together. |
+| `devsecops aws` | Stable | AWS | Primary AWS group for deployed output inspection and AWS doctor workflows. |
+| `devsecops aws outputs` | Stable | AWS | Read-only inspection of deployed Lambda, API Gateway, and CloudWatch outputs. |
+| `devsecops aws doctor` | Stable | AWS | Grouped alias for `devsecops doctor aws`. |
 | `devsecops validate-config` | Alias | Configuration | Compatibility command for `devsecops config validate`. |
 | `devsecops set` | Alias | Configuration | Compatibility alias for `devsecops config set`. |
 | `devsecops config` | Alias | Configuration | Compatibility shorthand for `devsecops config show`. |
@@ -72,7 +76,7 @@ Use `devsecops menu` when you prefer the interactive path.
 | `devsecops rollback` | Alias | Recovery | Compatibility alias for `devsecops snapshot restore`. |
 | `devsecops github` | Stable | GitHub | Primary GitHub group for setup, status, branch, and GitHub doctor workflows. |
 | `devsecops github setup` | Stable | GitHub | Prints, writes, or applies GitHub variable/secret setup commands through `gh`. |
-| `devsecops github status` | Stable | GitHub | Shows recent GitHub Actions runs and failed job summaries. |
+| `devsecops github status` | Stable | GitHub | Shows recent GitHub Actions runs, failed jobs, failed steps, next actions, and runbook links. |
 | `devsecops github branch` | Stable | GitHub | Checks branch protection and required checks. |
 | `devsecops github doctor` | Stable | GitHub | Checks GitHub CLI, variables, and secrets. |
 | `devsecops github-setup` | Alias | GitHub | Compatibility alias for `devsecops github setup`. |
@@ -111,11 +115,14 @@ Use `devsecops menu` when you prefer the interactive path.
 | First-success dry run | `devsecops dry-run --image-uri <immutable-ecr-image-uri>` |
 | Image preflight | `devsecops preflight --image-uri <immutable-ecr-image-uri>` |
 | Readiness | `devsecops readiness --format json` |
+| Strict readiness | `devsecops readiness --strict --format compact` |
 | Local doctor | `devsecops doctor local --deep --format compact` |
 | GitHub doctor | `devsecops doctor github --format json` |
 | AWS doctor | `devsecops doctor aws --environment prod --strict` |
+| AWS outputs | `devsecops aws outputs --environment prod --format json` |
 | Branch doctor | `devsecops doctor branch --branch main` |
 | Actions status | `devsecops doctor actions --format compact` |
+| Health validation | `devsecops health --url <health-url>` |
 | All diagnostics | `devsecops doctor all --format json` |
 | GitHub setup | `devsecops github setup --write` |
 | GitHub status | `devsecops github status --format json` |

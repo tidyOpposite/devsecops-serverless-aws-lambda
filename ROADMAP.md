@@ -215,26 +215,27 @@ Acceptance criteria:
 ## Milestone 5: Operational Reliability
 
 Target release: `v0.6.0`.
+Status: implemented in `v0.6.0`.
 
 Problem: the project should help users operate the pipeline after initial
 setup, not only generate it.
 
 Deliverables:
 
-* Stronger `actions-status` output with failed step summaries and next actions.
-* Health validation command that can run outside the GitHub workflow.
-* AWS output inspection command for deployed Lambda/API Gateway resources.
-* Clear separation between local config rollback and deployed Lambda rollback.
-* Runbooks for failed Terraform plan, failed apply, failed validation, missing
+- [x] Stronger `actions-status` output with failed step summaries and next actions.
+- [x] Health validation command that can run outside the GitHub workflow.
+- [x] AWS output inspection command for deployed Lambda/API Gateway resources.
+- [x] Clear separation between local config rollback and deployed Lambda rollback.
+- [x] Runbooks for failed Terraform plan, failed apply, failed validation, missing
   image, and failed rollback.
-* Optional strict mode for CI-friendly `doctor` and `readiness` checks.
+- [x] Optional strict mode for CI-friendly `doctor` and `readiness` checks.
 
 Acceptance criteria:
 
-* A failed deployment can be diagnosed from CLI output and linked runbooks.
-* The user can distinguish local generated-file recovery from cloud deployment
+- [x] A failed deployment can be diagnosed from CLI output and linked runbooks.
+- [x] The user can distinguish local generated-file recovery from cloud deployment
   rollback.
-* Operational commands are safe by default and require explicit confirmation
+- [x] Operational commands are safe by default and require explicit confirmation
   for mutating actions.
 
 ## Milestone 6: Security And Policy Maturity

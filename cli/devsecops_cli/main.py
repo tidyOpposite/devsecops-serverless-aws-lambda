@@ -19,6 +19,8 @@ import subprocess
 import sys
 import textwrap
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,7 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback guard
     tomllib = None  # type: ignore[assignment]
 
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 CONFIG_SCHEMA_VERSION = 1
 CONFIG_FILE = ".devsecops-pipeline.toml"
 EXIT_OK = 0
@@ -117,6 +119,12 @@ REQUIRED_BRANCH_CHECKS = [
     "Security and Terraform Validate",
     "Terraform Plan",
 ]
+RUNBOOKS_DIR = "docs/runbooks"
+RUNBOOK_FAILED_PLAN = f"{RUNBOOKS_DIR}/failed-terraform-plan.md"
+RUNBOOK_FAILED_APPLY = f"{RUNBOOKS_DIR}/failed-terraform-apply.md"
+RUNBOOK_FAILED_VALIDATION = f"{RUNBOOKS_DIR}/failed-validation.md"
+RUNBOOK_MISSING_IMAGE = f"{RUNBOOKS_DIR}/missing-image.md"
+RUNBOOK_FAILED_ROLLBACK = f"{RUNBOOKS_DIR}/failed-rollback.md"
 CANCEL_INPUTS = {"b", "back", "cancel", "q", "quit"}
 MENU_CANCEL_INPUTS = CANCEL_INPUTS | {"0"}
 ECR_IMAGE_RE = re.compile(
@@ -136,6 +144,15 @@ class EcrImageRef:
     repository: str
     tag: str | None = None
     digest: str | None = None
+
+
+@dataclass
+class ActionsStatus:
+    runs: list[list[str]]
+    failed_jobs: list[list[str]]
+    failed_steps: list[list[str]]
+    next_actions: list[str]
+    error: str | None = None
 
 
 class Style:
@@ -767,6 +784,14 @@ def snapshot_before_change(root: Path, operation: str, description: str) -> None
     print(info("Snapshot created: ") + path.name)
 
 
+def rollback_boundary_lines() -> list[str]:
+    return [
+        "Local snapshot restore only: restores CLI-owned files from `.devsecops/snapshots/`.",
+        "It does not change AWS Lambda, Terraform state, GitHub Actions, or deployed traffic.",
+        f"For deployment rollback diagnostics, use `{RUNBOOK_FAILED_ROLLBACK}` and GitHub Actions logs.",
+    ]
+
+
 def parse_config_value(raw_value: str, current_value: Any) -> Any:
     if isinstance(current_value, bool):
         normalized = raw_value.strip().lower()
@@ -1200,6 +1225,68 @@ def failed_job_rows(workflow_name: str, stdout: str) -> list[list[str]]:
                 ]
             )
     return rows
+
+
+def runbook_for_failure(workflow_name: str, job_name: str, step_name: str, conclusion: str = "") -> str:
+    text = " ".join([workflow_name, job_name, step_name, conclusion]).lower()
+    if "rollback" in text:
+        return RUNBOOK_FAILED_ROLLBACK
+    if "require lambda image" in text or "lambda_image_uri" in text or "image uri" in text or "snyk" in text:
+        return RUNBOOK_MISSING_IMAGE
+    if "apply" in text or "deploy" in text:
+        return RUNBOOK_FAILED_APPLY
+    if "ecr image" in text or "image" in text:
+        return RUNBOOK_MISSING_IMAGE
+    if "plan" in text:
+        return RUNBOOK_FAILED_PLAN
+    if any(marker in text for marker in ["validate", "fmt", "trivy", "health", "smoke", "dast", "zap"]):
+        return RUNBOOK_FAILED_VALIDATION
+    return "docs/troubleshooting.md#actions-status-cannot-show-workflow-runs"
+
+
+def failed_step_rows(workflow_name: str, stdout: str) -> list[list[str]]:
+    payload = parse_json_object(stdout)
+    jobs = payload.get("jobs", [])
+    rows: list[list[str]] = []
+    if not isinstance(jobs, list):
+        return rows
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        job_name = str(job.get("name", ""))
+        job_conclusion = str(job.get("conclusion") or "")
+        if not job_conclusion or job_conclusion in {"success", "skipped"}:
+            continue
+        steps = job.get("steps", [])
+        added_step = False
+        if isinstance(steps, list):
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                step_conclusion = str(step.get("conclusion") or "")
+                if step_conclusion and step_conclusion not in {"success", "skipped"}:
+                    step_name = str(step.get("name", ""))
+                    runbook = runbook_for_failure(workflow_name, job_name, step_name, step_conclusion)
+                    rows.append([workflow_name, job_name, step_name, step_conclusion, runbook])
+                    added_step = True
+        if not added_step:
+            runbook = runbook_for_failure(workflow_name, job_name, "", job_conclusion)
+            rows.append([workflow_name, job_name, "(job failed before step details)", job_conclusion, runbook])
+    return rows
+
+
+def actions_next_actions(run: dict[str, Any], failed_steps: list[list[str]]) -> list[str]:
+    run_id = str(run.get("databaseId") or "")
+    run_url = str(run.get("url") or "")
+    log_command = f"gh run view {run_id} --log-failed" if run_id else "gh run view <run-id> --log-failed"
+    actions = []
+    for workflow, job, step, conclusion, runbook in failed_steps:
+        location = f"{workflow} / {job}"
+        if step and not step.startswith("("):
+            location += f" / {step}"
+        suffix = f" Open {run_url}" if run_url else ""
+        actions.append(f"{location} ended with {conclusion}. Run `{log_command}` and follow `{runbook}`.{suffix}")
+    return actions
 
 
 def draw_box(title: str, lines: list[str], width: int = 74) -> None:
@@ -1670,6 +1757,140 @@ def collect_aws_checks(root: Path, cfg: dict[str, Any], env_name: str = "prod") 
     return checks
 
 
+def resolve_health_url(root: Path, url: str | None = None) -> tuple[str, str]:
+    if url:
+        return url.strip(), "argument"
+    if not command_exists("terraform"):
+        return "", "`terraform` not found on PATH and --url was not provided."
+    result = run_command(["terraform", "-chdir=terraform", "output", "-no-color", "-raw", "api_gateway_health_url"], root)
+    if result.returncode != 0:
+        return "", compact_error(result)
+    return result.stdout.strip(), "terraform output api_gateway_health_url"
+
+
+def fetch_health_url(url: str, timeout: int = 20) -> tuple[int | None, str]:
+    request = urllib.request.Request(url, headers={"User-Agent": f"devsecops-cli/{VERSION}"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = int(getattr(response, "status", response.getcode()))
+            preview = response.read(200).decode("utf-8", errors="replace").strip()
+            return status, preview or f"HTTP {status}"
+    except urllib.error.HTTPError as exc:
+        return int(exc.code), str(exc)
+    except urllib.error.URLError as exc:
+        return None, str(exc.reason)
+    except TimeoutError:
+        return None, f"Timed out after {timeout}s."
+
+
+def collect_health_checks(root: Path, cfg: dict[str, Any], url: str | None = None, timeout: int = 20) -> list[Check]:
+    health_url, source = resolve_health_url(root, url)
+    checks = [
+        Check(
+            "Health endpoint URL",
+            "OK" if health_url else "FAIL",
+            f"{health_url} ({source})" if health_url else source,
+        )
+    ]
+    if not health_url:
+        return checks
+    status, detail = fetch_health_url(health_url, timeout=timeout)
+    ok_status = status is not None and 200 <= status < 400
+    checks.append(
+        Check(
+            "Health response",
+            "OK" if ok_status else "FAIL",
+            f"HTTP {status}: {detail}" if status is not None else detail,
+        )
+    )
+    return checks
+
+
+def inspect_aws_outputs(root: Path, cfg: dict[str, Any], env_name: str = "prod") -> tuple[dict[str, str], list[Check]]:
+    region = str(cfg["aws_region"])
+    lambda_function = expected_lambda_function_name(cfg, env_name)
+    api_name = expected_api_gateway_name(cfg, env_name)
+    lambda_log_group = expected_lambda_log_group_name(cfg, env_name)
+    outputs = {
+        "environment": env_name,
+        "aws_region": region,
+        "lambda_function_name": lambda_function,
+        "lambda_state": "",
+        "lambda_last_update_status": "",
+        "lambda_image_uri": "",
+        "api_gateway_name": api_name,
+        "api_gateway_invoke_url": "",
+        "api_gateway_health_url": "",
+        "cloudwatch_log_group": lambda_log_group,
+        "cloudwatch_retention_days": "",
+    }
+    checks: list[Check] = []
+
+    if not command_exists("aws"):
+        checks.append(Check("AWS CLI", "WARN", "`aws` not found on PATH."))
+        checks.append(Check("AWS outputs", "WARN", "Cannot inspect deployed outputs without AWS CLI."))
+        return outputs, checks
+
+    checks.append(Check("AWS CLI", "OK", "Installed."))
+    identity_payload, identity_result = aws_json(root, ["sts", "get-caller-identity"])
+    if identity_result.returncode != 0:
+        checks.append(Check("AWS identity", "WARN", compact_error(identity_result)))
+        checks.append(Check("AWS outputs", "WARN", "Cannot inspect deployed outputs without valid AWS credentials."))
+        return outputs, checks
+    checks.append(Check("AWS identity", "OK", str(identity_payload.get("Arn") or identity_payload.get("Account") or "AWS credentials are usable.")))
+
+    lambda_payload, lambda_result = aws_json(root, ["lambda", "get-function", "--function-name", lambda_function, "--region", region])
+    if lambda_result.returncode == 0 and isinstance(lambda_payload, dict):
+        configuration = lambda_payload.get("Configuration", {})
+        if not isinstance(configuration, dict):
+            configuration = lambda_payload
+        outputs["lambda_state"] = str(configuration.get("State") or "")
+        outputs["lambda_last_update_status"] = str(configuration.get("LastUpdateStatus") or "")
+        code = lambda_payload.get("Code", {})
+        if isinstance(code, dict):
+            outputs["lambda_image_uri"] = str(code.get("ImageUri") or "")
+        outputs["lambda_image_uri"] = outputs["lambda_image_uri"] or str(configuration.get("ImageUri") or "")
+        checks.append(Check("Lambda function", "OK", f"{lambda_function} ({outputs['lambda_state'] or 'found'})"))
+    else:
+        checks.append(Check("Lambda function", "WARN", missing_or_error_detail(lambda_result, "Lambda function not deployed yet.")))
+
+    apis_payload, apis_result = aws_json(root, ["apigatewayv2", "get-apis", "--region", region])
+    if apis_result.returncode == 0 and isinstance(apis_payload, dict):
+        items = apis_payload.get("Items", [])
+        match = None
+        if isinstance(items, list):
+            match = next((item for item in items if isinstance(item, dict) and item.get("Name") == api_name), None)
+        if match:
+            endpoint = str(match.get("ApiEndpoint") or "")
+            outputs["api_gateway_invoke_url"] = endpoint
+            outputs["api_gateway_health_url"] = endpoint.rstrip("/") + "/health" if endpoint else ""
+            checks.append(Check("API Gateway", "OK", endpoint or api_name))
+        else:
+            checks.append(Check("API Gateway", "WARN", "API Gateway not deployed yet."))
+    else:
+        checks.append(Check("API Gateway", "WARN", compact_error(apis_result)))
+
+    logs_payload, logs_result = aws_json(
+        root,
+        ["logs", "describe-log-groups", "--log-group-name-prefix", lambda_log_group, "--region", region],
+    )
+    if logs_result.returncode == 0 and isinstance(logs_payload, dict):
+        groups = logs_payload.get("logGroups", [])
+        match = None
+        if isinstance(groups, list):
+            match = next((group for group in groups if isinstance(group, dict) and group.get("logGroupName") == lambda_log_group), None)
+        if match:
+            retention = match.get("retentionInDays")
+            outputs["cloudwatch_retention_days"] = str(retention or "")
+            checks.append(Check("CloudWatch log group", "OK", lambda_log_group))
+        else:
+            checks.append(Check("CloudWatch log group", "WARN", "Lambda log group not deployed yet."))
+    else:
+        checks.append(Check("CloudWatch log group", "WARN", compact_error(logs_result)))
+
+    return outputs, checks
+
+
 def collect_github_checks(root: Path, cfg: dict[str, Any]) -> list[Check]:
     checks: list[Check] = []
     if not command_exists("gh"):
@@ -1780,9 +2001,9 @@ def github_status_rows(root: Path, limit: int = 5) -> tuple[list[list[str]], str
     return actions_run_rows(runs), None
 
 
-def github_actions_status(root: Path, limit: int = 8, failed_jobs_limit: int = 3) -> tuple[list[list[str]], list[list[str]], str | None]:
+def collect_github_actions_status(root: Path, limit: int = 8, failed_jobs_limit: int = 3) -> ActionsStatus:
     if not command_exists("gh"):
-        return [], [], "`gh` not found on PATH."
+        return ActionsStatus([], [], [], [], "`gh` not found on PATH.")
     result = gh_command(
         root,
         [
@@ -1795,12 +2016,14 @@ def github_actions_status(root: Path, limit: int = 8, failed_jobs_limit: int = 3
         ],
     )
     if result.returncode != 0:
-        return [], [], compact_error(result)
+        return ActionsStatus([], [], [], [], compact_error(result))
     runs = parse_gh_runs(result.stdout)
     if not runs and result.stdout.strip():
-        return [], [], "Could not parse `gh run list` output."
+        return ActionsStatus([], [], [], [], "Could not parse `gh run list` output.")
 
     failed_rows: list[list[str]] = []
+    failed_step_rows_result: list[list[str]] = []
+    next_actions_result: list[str] = []
     failed_runs = [run for run in runs if str(run.get("conclusion") or "") == "failure"]
     for run in failed_runs[:failed_jobs_limit]:
         run_id = run.get("databaseId")
@@ -1809,9 +2032,34 @@ def github_actions_status(root: Path, limit: int = 8, failed_jobs_limit: int = 3
         job_result = gh_command(root, ["run", "view", str(run_id), "--json", "jobs"])
         if job_result.returncode != 0:
             failed_rows.append([str(run.get("workflowName", "")), "(jobs)", "unknown", compact_error(job_result)])
+            run_id_text = str(run_id)
+            run_url = str(run.get("url") or "")
+            next_actions_result.append(
+                f"Could not inspect failed jobs for run {run_id_text}. Run `gh run view {run_id_text} --log-failed` "
+                f"and see `docs/troubleshooting.md#actions-status-cannot-show-workflow-runs`."
+                + (f" Open {run_url}" if run_url else "")
+            )
+            failed_step_rows_result.append(
+                [
+                    str(run.get("workflowName", "")),
+                    "(jobs)",
+                    "(could not inspect failed steps)",
+                    "unknown",
+                    "docs/troubleshooting.md#actions-status-cannot-show-workflow-runs",
+                ]
+            )
             continue
-        failed_rows.extend(failed_job_rows(str(run.get("workflowName", "")), job_result.stdout))
-    return actions_run_rows(runs), failed_rows, None
+        workflow_name = str(run.get("workflowName", ""))
+        failed_rows.extend(failed_job_rows(workflow_name, job_result.stdout))
+        run_failed_steps = failed_step_rows(workflow_name, job_result.stdout)
+        failed_step_rows_result.extend(run_failed_steps)
+        next_actions_result.extend(actions_next_actions(run, run_failed_steps))
+    return ActionsStatus(actions_run_rows(runs), failed_rows, failed_step_rows_result, next_actions_result)
+
+
+def github_actions_status(root: Path, limit: int = 8, failed_jobs_limit: int = 3) -> tuple[list[list[str]], list[list[str]], str | None]:
+    status = collect_github_actions_status(root, limit=limit, failed_jobs_limit=failed_jobs_limit)
+    return status.runs, status.failed_jobs, status.error
 
 
 def apply_github_setup(root: Path, cfg: dict[str, Any], args: argparse.Namespace) -> int:
@@ -2191,6 +2439,12 @@ def readiness_action_detail_for_check(check: Check) -> str:
         return "Run `terraform validate` in the reported module and fix the Terraform error."
     if check.name == "AWS identity":
         return "Configure AWS credentials and verify with `aws sts get-caller-identity`."
+    if check.name == "AWS outputs":
+        return "Install/configure AWS CLI, then run `devsecops aws outputs --environment prod` again."
+    if check.name == "Health endpoint URL":
+        return "Pass `--url <health-url>` or deploy once so Terraform output `api_gateway_health_url` exists."
+    if check.name == "Health response":
+        return "Inspect Lambda logs and workload `/health` behavior, then rerun `devsecops health`."
     return check.detail
 
 
@@ -2206,6 +2460,10 @@ def troubleshooting_anchor_for_check(check: Check) -> str:
         return "#terraform-cli-is-not-found"
     if name in {"`aws` CLI", "AWS CLI", "AWS identity"}:
         return "#aws-doctor-cannot-inspect-resources"
+    if name == "AWS outputs":
+        return "#check-aws-account-and-deployed-resources"
+    if name.startswith("Health "):
+        return "#health-check-returns-500"
     if name in {"Backend bucket", "State bucket", "Lock table", "Backend lock table"}:
         return "#readiness-says-backend-bucket-is-missing"
     if name in {
@@ -3013,6 +3271,8 @@ def cmd_rollback(args: argparse.Namespace) -> int:
     if not snapshot:
         print(fail("No matching snapshot found."))
         return 1
+    draw_box("Local Snapshot Restore", rollback_boundary_lines())
+    print()
     print_snapshot_detail(root, snapshot)
     changes = snapshot_changes(root, snapshot)
     if args.dry_run:
@@ -3047,40 +3307,65 @@ def cmd_gh_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_gh_status(args: argparse.Namespace) -> int:
-    rows, failed_rows, error = github_actions_status(repo_root(), limit=args.limit)
+    status = collect_github_actions_status(repo_root(), limit=args.limit)
     output_format = getattr(args, "format", "human")
-    if error:
+    if status.error:
         if output_format == "json":
-            emit_json({"kind": "github-actions-status", "error": error, "runs": [], "failed_jobs": []})
+            emit_json(
+                {
+                    "kind": "github-actions-status",
+                    "error": status.error,
+                    "runs": [],
+                    "failed_jobs": [],
+                    "failed_steps": [],
+                    "next_actions": [],
+                }
+            )
         else:
-            print(warn(error))
+            print(warn(status.error))
         if not getattr(args, "strict", False):
             return EXIT_OK
-        if "not found on PATH" in error:
+        if "not found on PATH" in status.error:
             return EXIT_MISSING_EXTERNAL_TOOL
-        if "auth" in error.lower() or "login" in error.lower():
+        if "auth" in status.error.lower() or "login" in status.error.lower():
             return EXIT_AUTH_FAILED
         return EXIT_VALIDATION_FAILED
     if output_format == "json":
-        emit_json({"kind": "github-actions-status", "runs": rows, "failed_jobs": failed_rows})
-        return EXIT_OK
-    if not rows:
+        emit_json(
+            {
+                "kind": "github-actions-status",
+                "runs": status.runs,
+                "failed_jobs": status.failed_jobs,
+                "failed_steps": status.failed_steps,
+                "next_actions": status.next_actions,
+            }
+        )
+        return EXIT_VALIDATION_FAILED if getattr(args, "strict", False) and status.failed_jobs else EXIT_OK
+    if not status.runs:
         print(warn("No GitHub Actions runs found."))
         return EXIT_OK
     if output_format == "compact":
         print(info("Recent GitHub Actions Runs"))
-        for row in rows:
+        for row in status.runs:
             print(" | ".join(row[:4]))
-        if failed_rows:
-            print(warn(f"Failed jobs: {len(failed_rows)}"))
+        if status.failed_jobs:
+            print(warn(f"Failed jobs: {len(status.failed_jobs)}"))
+        for action in status.next_actions:
+            print("Fix: " + action)
     else:
-        draw_table(["Workflow", "Branch", "Status", "Conclusion", "Created"], rows, title="Recent GitHub Actions Runs")
-        if failed_rows:
+        draw_table(["Workflow", "Branch", "Status", "Conclusion", "Created"], status.runs, title="Recent GitHub Actions Runs")
+        if status.failed_jobs:
             print()
-            draw_table(["Workflow", "Job", "Status", "Conclusion"], failed_rows, title="Failed Jobs")
-        else:
+            draw_table(["Workflow", "Job", "Status", "Conclusion"], status.failed_jobs, title="Failed Jobs")
+        if status.failed_steps:
+            print()
+            draw_table(["Workflow", "Job", "Step", "Conclusion", "Runbook"], status.failed_steps, title="Failed Steps")
+        if status.next_actions:
+            print()
+            draw_box("Next Actions", status.next_actions)
+        if not status.failed_jobs:
             print(ok("No failed jobs found in inspected runs."))
-    return EXIT_OK
+    return EXIT_VALIDATION_FAILED if getattr(args, "strict", False) and status.failed_jobs else EXIT_OK
 
 
 def cmd_branch_doctor(args: argparse.Namespace) -> int:
@@ -3363,7 +3648,20 @@ def cmd_readiness(args: argparse.Namespace) -> int:
         print_gap_summary(checks, limit=5)
     else:
         print_readiness_details(root, deep=getattr(args, "deep", False))
-    return EXIT_OK
+    return strict_exit_code(checks, strict=getattr(args, "strict", False), fail_on_warn=True)
+
+
+def cmd_health(args: argparse.Namespace) -> int:
+    root = repo_root()
+    cfg = load_config(root)
+    checks = collect_health_checks(root, cfg, url=getattr(args, "url", None), timeout=getattr(args, "timeout", 20))
+    emit_check_output(
+        "Health",
+        checks,
+        output_format=getattr(args, "format", "human"),
+        context={"source": "url" if getattr(args, "url", None) else "terraform output", "timeout_seconds": getattr(args, "timeout", 20)},
+    )
+    return EXIT_VALIDATION_FAILED if any(check.status == "FAIL" for check in checks) else EXIT_OK
 
 
 def cmd_aws_doctor(args: argparse.Namespace) -> int:
@@ -3377,6 +3675,48 @@ def cmd_aws_doctor(args: argparse.Namespace) -> int:
         context={"environment": args.environment},
     )
     return strict_exit_code(checks, strict=getattr(args, "strict", False), fail_on_warn=True)
+
+
+def cmd_aws_outputs(args: argparse.Namespace) -> int:
+    root = repo_root()
+    cfg = load_config(root)
+    outputs, checks = inspect_aws_outputs(root, cfg, env_name=getattr(args, "environment", "prod"))
+    output_format = getattr(args, "format", "human")
+    if output_format == "json":
+        emit_json(
+            {
+                "kind": "aws-outputs",
+                "environment": getattr(args, "environment", "prod"),
+                "outputs": outputs,
+                "checks": [check_to_dict(check) for check in checks],
+                "next_actions": [readiness_action_for_check(check) for check in checks if check.scored and check.status != "OK"],
+            }
+        )
+    else:
+        draw_box(
+            "AWS Deployed Outputs",
+            [
+                "Read-only inspection of deployed Lambda, API Gateway, and log resources.",
+                f"Environment: {outputs['environment']}",
+                f"Region: {outputs['aws_region']}",
+            ],
+        )
+        print()
+        draw_table(["Output", "Value"], [[key, value or "(not found)"] for key, value in outputs.items()])
+        print()
+        print_compact_checks(checks, title="AWS Output Checks")
+    return strict_exit_code(checks, strict=getattr(args, "strict", False), fail_on_warn=True)
+
+
+def cmd_aws(args: argparse.Namespace) -> int:
+    command = getattr(args, "aws_command", None) or "outputs"
+    if command == "doctor":
+        return cmd_aws_doctor(args)
+    if command == "outputs":
+        return cmd_aws_outputs(args)
+    print(fail("Unknown AWS command: ") + str(command))
+    print("Usage: devsecops aws [doctor|outputs]")
+    return EXIT_VALIDATION_FAILED
 
 
 def cmd_github(args: argparse.Namespace) -> int:
@@ -3987,10 +4327,7 @@ def menu_rollback_section(root: Path) -> None:
     clear_screen()
     draw_box(
         "Snapshots / Rollback",
-        [
-            "Snapshots are local restore points for CLI-owned generated files.",
-            "Choose a number to inspect changes, or type `b`, `back`, `0`, or `cancel` to return.",
-        ],
+        rollback_boundary_lines() + ["Choose a number to inspect changes, or type `b`, `back`, `0`, or `cancel` to return."],
     )
     snapshots = print_snapshot_list(root)
     if not snapshots:
@@ -4007,6 +4344,8 @@ def menu_rollback_section(root: Path) -> None:
         return
 
     clear_screen()
+    draw_box("Local Snapshot Restore", rollback_boundary_lines())
+    print()
     print_snapshot_detail(root, snapshot)
     print()
     print("[1] Preview rollback")
@@ -4134,6 +4473,7 @@ def build_parser() -> argparse.ArgumentParser:
               devsecops dry-run --image-uri <immutable-ecr-image-uri>
               devsecops render
               devsecops readiness
+              devsecops readiness --strict --format compact
               devsecops report
 
             Docs:
@@ -4155,7 +4495,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     subparsers = parser.add_subparsers(
         dest="command",
-        metavar="{menu,config,dry-run,preflight,doctor,render,github,terraform,snapshot,readiness,report,dashboard,explain}",
+        metavar="{menu,config,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain}",
     )
     parser.set_defaults(func=cmd_menu)
 
@@ -4231,6 +4571,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     readiness_parser = subparsers.add_parser("readiness", help="Show what blocks 100%% readiness.")
     readiness_parser.add_argument("--deep", action="store_true", help="Include Terraform/AWS deep checks.")
+    readiness_parser.add_argument("--strict", action="store_true", help="Exit non-zero on any scored readiness gap.")
     readiness_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     readiness_parser.set_defaults(func=cmd_readiness)
 
@@ -4245,6 +4586,12 @@ def build_parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--environment", choices=ENVIRONMENTS, default="prod", help="Environment target for image naming checks.")
     preflight_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     preflight_parser.set_defaults(func=cmd_preflight)
+
+    health_parser = subparsers.add_parser("health", help="Validate the deployed /health endpoint outside GitHub Actions.")
+    health_parser.add_argument("--url", help="Health URL to check. Defaults to Terraform output api_gateway_health_url.")
+    health_parser.add_argument("--timeout", type=int, default=20, help="HTTP timeout in seconds.")
+    health_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    health_parser.set_defaults(func=cmd_health)
 
     render_parser = subparsers.add_parser("render", help="Render CLI-owned Terraform/GitHub helper artifacts.")
     render_parser.add_argument("--dry-run", action="store_true", help="Preview generated files without writing them.")
@@ -4295,6 +4642,22 @@ def build_parser() -> argparse.ArgumentParser:
     github_group_branch_parser.add_argument("--strict", action="store_true", help="Exit non-zero on failed scored checks.")
     github_group_branch_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     github_group_branch_parser.set_defaults(func=cmd_github)
+
+    aws_parser = subparsers.add_parser("aws", help="Inspect AWS deployed resources and AWS readiness.")
+    aws_parser.set_defaults(func=cmd_aws, aws_command="outputs", environment="prod", strict=False, format="human")
+    aws_subparsers = aws_parser.add_subparsers(dest="aws_command", metavar="{outputs,doctor}")
+
+    aws_outputs_parser = aws_subparsers.add_parser("outputs", help="Inspect deployed Lambda/API Gateway outputs from AWS.")
+    aws_outputs_parser.add_argument("--environment", choices=ENVIRONMENTS, default="prod", help="Environment resources to inspect.")
+    aws_outputs_parser.add_argument("--strict", action="store_true", help="Exit non-zero on WARN or FAIL checks.")
+    aws_outputs_parser.add_argument("--format", choices=["human", "json"], default="human", help="Output mode.")
+    aws_outputs_parser.set_defaults(func=cmd_aws)
+
+    aws_group_doctor_parser = aws_subparsers.add_parser("doctor", help="Check AWS identity, backend, and deployed resources.")
+    aws_group_doctor_parser.add_argument("--environment", choices=ENVIRONMENTS, default="prod", help="Environment resources to inspect.")
+    aws_group_doctor_parser.add_argument("--strict", action="store_true", help="Exit non-zero on WARN or FAIL scored checks.")
+    aws_group_doctor_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
+    aws_group_doctor_parser.set_defaults(func=cmd_aws)
 
     github_setup_parser = subparsers.add_parser("github-setup", help=argparse.SUPPRESS)
     github_setup_parser.add_argument("--write", action="store_true", help="Write dist/devsecops/github-setup.sh.")

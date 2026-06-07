@@ -55,7 +55,7 @@ def project_version(path: Path) -> str:
 
 class DevSecOpsCliTests(unittest.TestCase):
     def test_version_metadata_is_consistent(self) -> None:
-        self.assertEqual(cli.VERSION, "0.5.0")
+        self.assertEqual(cli.VERSION, "0.6.0")
         self.assertEqual(package.VERSION, cli.VERSION)
         self.assertEqual(package.__version__, cli.VERSION)
         self.assertEqual(project_version(ROOT_DIR / "pyproject.toml"), cli.VERSION)
@@ -339,7 +339,10 @@ class DevSecOpsCliTests(unittest.TestCase):
 
     def test_top_level_help_is_grouped_and_legacy_aliases_are_not_primary_choices(self) -> None:
         help_text = cli.build_parser().format_help()
-        self.assertIn("{menu,config,dry-run,preflight,doctor,render,github,terraform,snapshot,readiness,report,dashboard,explain}", help_text)
+        self.assertIn(
+            "{menu,config,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain}",
+            help_text,
+        )
         self.assertIn("Legacy aliases still work", help_text)
         self.assertIn("Stable exit codes", help_text)
         self.assertNotIn("==SUPPRESS==", help_text)
@@ -469,6 +472,19 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertEqual(rows[0][0], "Lambda image URI")
         self.assertIn("devsecops set lambda_image_uri", rows[0][3])
         self.assertIn("docs/troubleshooting.md#lambda-image-uri-is-missing-or-invalid", rows[0][3])
+
+    def test_readiness_strict_fails_on_scored_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "load_config", return_value=cli.default_config()), patch.object(
+                cli,
+                "collect_checks",
+                return_value=[cli.Check("Backend bucket", "WARN", "Set a real S3 state bucket name.")],
+            ):
+                with redirect_stdout(io.StringIO()):
+                    result = cli.cmd_readiness(argparse.Namespace(deep=False, format="json", strict=True))
+
+        self.assertEqual(result, cli.EXIT_VALIDATION_FAILED)
 
     def test_doctor_compact_output_links_troubleshooting_for_gaps(self) -> None:
         buffer = io.StringIO()
@@ -791,6 +807,100 @@ class DevSecOpsCliTests(unittest.TestCase):
         )
         self.assertEqual(failed, [["Deploy", "Apply", "completed", "failure"]])
 
+        failed_steps = cli.failed_step_rows(
+            "Deploy",
+            json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "name": "Manual Apply and Deploy Production",
+                            "status": "completed",
+                            "conclusion": "failure",
+                            "steps": [
+                                {"name": "Terraform apply workload with configured Lambda image", "conclusion": "failure"},
+                            ],
+                        }
+                    ]
+                }
+            ),
+        )
+        self.assertEqual(failed_steps[0][2], "Terraform apply workload with configured Lambda image")
+        self.assertEqual(failed_steps[0][4], cli.RUNBOOK_FAILED_APPLY)
+
+    def test_github_actions_status_json_includes_failed_steps_and_next_actions(self) -> None:
+        def fake_gh_command(root: Path, args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ["run", "list"]:
+                return subprocess.CompletedProcess(
+                    ["gh", *args],
+                    0,
+                    stdout=json.dumps(
+                        [
+                            {
+                                "databaseId": 10,
+                                "workflowName": "Secure Serverless DevSecOps Pipeline",
+                                "headBranch": "main",
+                                "status": "completed",
+                                "conclusion": "failure",
+                                "createdAt": "2026-06-05T00:00:00Z",
+                                "url": "https://github.example/runs/10",
+                            }
+                        ]
+                    ),
+                    stderr="",
+                )
+            if args[:3] == ["run", "view", "10"]:
+                return subprocess.CompletedProcess(
+                    ["gh", *args],
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "jobs": [
+                                {
+                                    "name": "Manual Apply and Deploy Production",
+                                    "status": "completed",
+                                    "conclusion": "failure",
+                                    "steps": [
+                                        {"name": "Terraform apply workload with configured Lambda image", "conclusion": "failure"}
+                                    ],
+                                }
+                            ]
+                        }
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(["gh", *args], 1, stdout="", stderr="unexpected")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "command_exists", return_value=True), patch.object(
+                cli,
+                "gh_command",
+                side_effect=fake_gh_command,
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["github", "status", "--format", "json", "--strict"])
+
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(result, cli.EXIT_VALIDATION_FAILED)
+        self.assertEqual(payload["failed_steps"][0][4], cli.RUNBOOK_FAILED_APPLY)
+        self.assertIn("gh run view 10 --log-failed", payload["next_actions"][0])
+
+    def test_health_command_validates_explicit_url_without_terraform(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.default_config())
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "fetch_health_url", return_value=(200, "ok")):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["health", "--url", "https://api.example/health", "--format", "json"])
+
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertEqual(payload["kind"], "health")
+        self.assertEqual(payload["checks"][1]["name"], "Health response")
+        self.assertEqual(payload["checks"][1]["status"], "OK")
+
     def test_parse_ecr_image_uri_tag_and_digest(self) -> None:
         tagged = cli.parse_ecr_image_uri("123456789012.dkr.ecr.us-east-1.amazonaws.com/app/service:sha-abc123")
         self.assertIsNotNone(tagged)
@@ -882,6 +992,56 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertEqual(by_name["CloudWatch log group"].status, "OK")
         self.assertEqual(by_name["Configured ECR image"].status, "OK")
 
+    def test_aws_outputs_reports_deployed_lambda_api_and_logs(self) -> None:
+        cfg = cli.default_config()
+
+        def completed(command: list[str], stdout: str = "{}") -> tuple[object, subprocess.CompletedProcess[str]]:
+            return json.loads(stdout), subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        def fake_aws_json(root: Path, args: list[str], timeout: int = 30) -> tuple[object, subprocess.CompletedProcess[str]]:
+            command_text = " ".join(args)
+            if "sts get-caller-identity" in command_text:
+                return completed(args, json.dumps({"Arn": "arn:aws:iam::123456789012:user/test"}))
+            if "lambda get-function" in command_text:
+                return completed(
+                    args,
+                    json.dumps(
+                        {
+                            "Configuration": {"State": "Active", "LastUpdateStatus": "Successful"},
+                            "Code": {"ImageUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/app:sha-abc123"},
+                        }
+                    ),
+                )
+            if "apigatewayv2 get-apis" in command_text:
+                return completed(
+                    args,
+                    json.dumps({"Items": [{"Name": "devsecops-pipeline-prod-http-api", "ApiEndpoint": "https://api.example"}]}),
+                )
+            if "logs describe-log-groups" in command_text:
+                return completed(
+                    args,
+                    json.dumps({"logGroups": [{"logGroupName": "/aws/lambda/devsecops-pipeline-prod-lambda", "retentionInDays": 365}]}),
+                )
+            return {}, subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cfg)
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "command_exists", return_value=True), patch.object(
+                cli,
+                "aws_json",
+                side_effect=fake_aws_json,
+            ):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["aws", "outputs", "--environment", "prod", "--format", "json", "--strict"])
+
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertEqual(payload["kind"], "aws-outputs")
+        self.assertEqual(payload["outputs"]["lambda_state"], "Active")
+        self.assertEqual(payload["outputs"]["api_gateway_health_url"], "https://api.example/health")
+
     def test_collect_checks_deep_includes_aws_resource_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -951,6 +1111,29 @@ class DevSecOpsCliTests(unittest.TestCase):
             cli.restore_snapshot(root, snapshot)
             restored = cli.load_config(root)
             self.assertEqual(restored["project_name"], "before-app")
+
+    def test_rollback_output_distinguishes_local_restore_from_cloud_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = cli.default_config()
+            cfg["project_name"] = "before-app"
+            cli.write_config(root, cfg)
+
+            snapshot_path = cli.create_snapshot(root, "set", "Before project rename")
+            snapshot_id = snapshot_path.name
+
+            cfg["project_name"] = "after-app"
+            cli.write_config(root, cfg)
+
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.cmd_rollback(argparse.Namespace(to=snapshot_id, last=False, dry_run=True, yes=False))
+
+        output = buffer.getvalue()
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertIn("Local snapshot restore only", output)
+        self.assertIn("It does not change AWS Lambda", output)
 
     def test_snapshot_restore_reverts_overwritten_cli_owned_generated_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
