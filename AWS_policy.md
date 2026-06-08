@@ -31,6 +31,20 @@ Use separate roles. The workflow requires `AWS_PLAN_ROLE_TO_ASSUME_ARN` for
 Terraform plans and does not fall back to the deploy role. The plan role should
 not be able to mutate workload resources beyond Terraform backend locking.
 
+## Least-Privilege Boundaries
+
+Treat the two roles as different blast-radius controls:
+
+| Role | Allow | Avoid |
+| --- | --- | --- |
+| Plan role | Read Terraform state, acquire/release the DynamoDB lock, list/read backend objects, and describe existing resources for Terraform refresh. | Do not grant broad create, update, delete, `iam:PassRole`, Lambda update, or KMS administration permissions. Do not reuse the deploy role for pull request planning. |
+| Deploy role | Apply Terraform-managed resources after the protected production environment gate, pass only the Terraform-managed Lambda execution role, read the configured ECR image, and update Lambda image code for deploy/rollback. | Do not use for PR plans. Do not use unscoped account-wide permissions after project, environment, and resource names are stable. Do not store long-lived AWS keys in GitHub. |
+
+Generate `dist/devsecops/audit-report.json` with
+`devsecops report --format json` before a production review. The report records
+the current control states and this role-separation guidance as attachable
+evidence.
+
 ## OIDC Provider
 
 Create an IAM OIDC identity provider:
@@ -217,6 +231,11 @@ refresh. Start with read-only permissions for the services above, then add
 specific `kms:DescribeKey`, `iam:GetRole`, `iam:GetRolePolicy`,
 `lambda:GetFunctionConfiguration`, `ecr:DescribeRepositories`, and S3 listing
 permissions as Terraform reports missing access.
+
+Keep the plan role trust policy scoped to the repository and pull request
+subjects you trust. The bundled workflow skips forked pull requests for
+AWS-backed plans; keep that guard unless you provide a separate sandbox account
+and review process for untrusted code.
 
 ## KMS Admin Role Name
 

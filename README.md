@@ -225,6 +225,7 @@ devsecops controls      # security controls matrix
 devsecops render        # writes ignored Terraform/GitHub helper artifacts
 devsecops render --dry-run
 devsecops report        # exports Markdown readiness report
+devsecops report --format json # exports attachable audit evidence
 devsecops explain oidc  # explains a security control
 ```
 
@@ -257,6 +258,8 @@ dist/devsecops/setup-checklist.md
 ```
 
 `devsecops report` writes `dist/devsecops/readiness-report.md`.
+`devsecops report --format json` writes `dist/devsecops/audit-report.json`
+for pull request, workflow artifact, or release evidence.
 
 Generated artifacts include CLI-owned headers and are ignored by Git. See
 [Generated artifacts](docs/generated-artifacts.md) for the source-versus-output
@@ -305,6 +308,7 @@ devsecops set lambda_image_uri 123456789012.dkr.ecr.us-east-1.amazonaws.com/app:
 devsecops set enable_dast true
 devsecops set environments.prod.lambda_timeout 300 --render
 devsecops config validate
+devsecops config validate --strict
 ```
 
 Presets provide a quick starting point:
@@ -321,6 +325,12 @@ devsecops preset apply student-demo --render  # simple demonstration profile
 
 For compatibility, `devsecops preset strict --render` still applies the named
 preset, but new scripts should use `devsecops preset apply <name>`.
+
+Each preset has a documented security posture and can be compared with
+`devsecops preset list`. Use
+[Security controls and policy presets](docs/security-controls.md) for the full
+control catalog, preset comparison, strict validation rules, and audit evidence
+format.
 
 Use the pipeline composer when you want the CLI to ask for individual controls
 and then update all generated outputs in one pass:
@@ -427,6 +437,12 @@ Recommended branch protection for `main`:
   AWS-backed plan job is skipped.
 * Direct pushes to `main` do not run this workflow.
 
+Use separate AWS roles for plan and deploy. The plan role should read backend
+state, acquire locks, and describe resources for Terraform refresh; it should
+not mutate workload resources. The deploy role is reserved for approved manual
+production deploys from `main`. See [AWS IAM policy guidance](AWS_policy.md)
+and [Security controls and policy presets](docs/security-controls.md).
+
 ## Pipeline Behavior
 
 | Event | Environment | Terraform action | Deployment |
@@ -512,6 +528,7 @@ devsecops health
 ## Reference Documents
 
 * [Security model](docs/security-model.md)
+* [Security controls and policy presets](docs/security-controls.md)
 * [Scanning tool rationale](docs/scanning-tools.md)
 * [AWS cost estimation](docs/cost-estimation.md)
 * [Troubleshooting guide](docs/troubleshooting.md)
@@ -524,6 +541,7 @@ devsecops health
 * [Operational runbooks](docs/runbooks/README.md)
 * [AWS OIDC and IAM policy guidance](AWS_policy.md)
 * [Changelog](CHANGELOG.md)
+* [v0.7.0 release notes](docs/release-v0.7.0.md)
 * [v0.6.1 release notes](docs/release-v0.6.1.md)
 * [v0.6.0 release notes](docs/release-v0.6.0.md)
 * [v0.5.0 release notes](docs/release-v0.5.0.md)

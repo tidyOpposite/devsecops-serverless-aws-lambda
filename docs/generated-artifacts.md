@@ -16,12 +16,14 @@ and operator checklists.
 | `dist/devsecops/github-setup.sh` | CLI-owned generated helper | No | Update `.devsecops-pipeline.toml`, then run `devsecops render` or `devsecops github-setup --write`. |
 | `dist/devsecops/setup-checklist.md` | CLI-owned generated checklist | No | Update `.devsecops-pipeline.toml`, then run `devsecops render`. |
 | `dist/devsecops/readiness-report.md` | CLI-owned generated report | No | Run `devsecops report` after changing config or environment state. |
+| `dist/devsecops/audit-report.json` | CLI-owned generated audit evidence | No | Run `devsecops report --format json` after changing config, controls, readiness, or release evidence. |
 | `.devsecops/snapshots/` | CLI-owned local recovery data | No | Created automatically before CLI-owned files are overwritten. Inspect with `devsecops snapshots`. |
 
 ## CLI-Owned Header
 
-Rendered files include a header that identifies them as CLI-owned. The header
-means:
+Rendered text files include a header that identifies them as CLI-owned. JSON
+reports use `kind`, `schema_version`, and generated-path documentation for the
+same ownership signal. The ownership marker means:
 
 * Do not edit the generated file directly for durable changes.
 * Change `.devsecops-pipeline.toml` or the relevant external system instead.
@@ -41,6 +43,12 @@ Generated artifacts are outputs of that source config. They may contain
 non-secret values such as project names, regions, repository variable values,
 and placeholder commands for secrets. They are ignored by Git because they are
 environment-specific and can be regenerated.
+
+`dist/devsecops/audit-report.json` is intended to be attached to pull requests,
+workflow artifacts, or release records. It summarizes readiness checks,
+strict config validation, control catalog state, policy preset posture, and
+least-privilege role guidance. It is still generated output, not durable source
+configuration.
 
 ## Backend Template Exception
 

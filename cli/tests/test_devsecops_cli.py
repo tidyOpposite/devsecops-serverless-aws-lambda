@@ -55,7 +55,7 @@ def project_version(path: Path) -> str:
 
 class DevSecOpsCliTests(unittest.TestCase):
     def test_version_metadata_is_consistent(self) -> None:
-        self.assertEqual(cli.VERSION, "0.6.1")
+        self.assertEqual(cli.VERSION, "0.7.0")
         self.assertEqual(package.VERSION, cli.VERSION)
         self.assertEqual(package.__version__, cli.VERSION)
         self.assertEqual(project_version(ROOT_DIR / "pyproject.toml"), cli.VERSION)
@@ -504,6 +504,45 @@ class DevSecOpsCliTests(unittest.TestCase):
         failures = [check for check in cli.validate_config(cfg) if check.status == "FAIL"]
         self.assertTrue(any(check.name == "dev.lambda_timeout" for check in failures))
 
+    def test_config_validation_surfaces_production_policy_risks(self) -> None:
+        cfg = cli.default_config()
+        cfg["lambda_image_uri"] = "repo.example/app:latest"
+        cfg["use_prod_approval_environment"] = False
+        cfg["use_separate_aws_plan_role"] = False
+        cfg["enable_http_validation"] = False
+        cfg["environments"]["prod"]["cors_allowed_origins"] = ["*"]
+
+        by_name = {check.name: check for check in cli.validate_config(cfg)}
+
+        self.assertEqual(by_name["Lambda image immutability policy"].status, "FAIL")
+        self.assertEqual(by_name["Production CORS policy"].status, "WARN")
+        self.assertEqual(by_name["Production approval gate policy"].status, "WARN")
+        self.assertEqual(by_name["Separate plan role policy"].status, "WARN")
+        self.assertEqual(by_name["Deployment validation policy"].status, "WARN")
+
+    def test_config_validate_strict_fails_on_policy_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = cli.default_config()
+            cfg["lambda_image_uri"] = "123456789012.dkr.ecr.us-east-1.amazonaws.com/app:sha-abc123"
+            cfg["enable_http_validation"] = True
+            cfg["environments"]["prod"]["cors_allowed_origins"] = ["*"]
+            cli.write_config(root, cfg)
+            with patch.object(cli, "repo_root", return_value=root):
+                relaxed = io.StringIO()
+                with redirect_stdout(relaxed):
+                    relaxed_result = cli.main(["config", "validate", "--format", "json"])
+                strict = io.StringIO()
+                with redirect_stdout(strict):
+                    strict_result = cli.main(["config", "validate", "--strict", "--format", "json"])
+
+        relaxed_payload = json.loads(relaxed.getvalue())
+        strict_payload = json.loads(strict.getvalue())
+        self.assertEqual(relaxed_result, cli.EXIT_OK)
+        self.assertEqual(strict_result, cli.EXIT_VALIDATION_FAILED)
+        self.assertTrue(any(check["name"] == "Production CORS policy" and check["status"] == "WARN" for check in strict_payload["checks"]))
+        self.assertEqual(relaxed_payload["kind"], "config")
+
     def test_config_validate_command_fails_before_external_tools_on_bad_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -564,6 +603,9 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertFalse(demo["enable_http_validation"])
         self.assertFalse(demo["enable_dast"])
         self.assertEqual(demo["environments"]["dev"]["lambda_memory_size"], 512)
+        demo_preset = cli.preset_dict("student-demo")
+        self.assertEqual(demo_preset["posture"], "demo-only")
+        self.assertTrue(demo_preset["strict_policy_gaps"])
 
     def test_preset_list_show_apply_and_legacy_apply(self) -> None:
         list_output = io.StringIO()
@@ -571,6 +613,8 @@ class DevSecOpsCliTests(unittest.TestCase):
             self.assertEqual(cli.cmd_preset(argparse.Namespace(command="list", name=None, render=False)), 0)
         self.assertIn("enterprise", list_output.getvalue())
         self.assertIn("student-demo", list_output.getvalue())
+        self.assertIn("Policy Preset Comparison", list_output.getvalue())
+        self.assertIn("production-oriented", list_output.getvalue())
 
         show_output = io.StringIO()
         with redirect_stdout(show_output):
@@ -654,6 +698,38 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("gh secret set SNYK_TOKEN", script)
         self.assertIn("sha-abc123", script)
 
+    def test_control_catalog_and_explain_map_generated_behavior(self) -> None:
+        cfg = cli.default_config()
+        control = cli.control_by_id("image")
+        self.assertIsNotNone(control)
+        self.assertEqual(control.id, "immutable-image")
+
+        lines = "\n".join(cli.explain_text("image", cfg))
+        self.assertIn("CLI: lambda_image_uri", lines)
+        self.assertIn("Terraform:", lines)
+        self.assertIn("GitHub:", lines)
+        self.assertIn("AWS:", lines)
+        self.assertIn("Scanners:", lines)
+        self.assertIn("LAMBDA_IMAGE_URI", lines)
+
+    def test_controls_json_output_contains_catalog_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.default_config())
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["controls", "--format", "json"])
+
+        payload = json.loads(buffer.getvalue())
+        immutable = next(control for control in payload["controls"] if control["id"] == "immutable-image")
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertEqual(payload["kind"], "control-catalog")
+        self.assertIn("lambda_image_uri", " ".join(immutable["cli_options"]))
+        self.assertTrue(immutable["terraform"])
+        self.assertTrue(immutable["github"])
+        self.assertTrue(immutable["aws"])
+
     def test_markdown_report_contains_checks_and_actions(self) -> None:
         cfg = cli.default_config()
         checks = [cli.Check("Lambda image URI", "WARN", "Required before production deploy.")]
@@ -662,6 +738,26 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("## Score Breakdown", report)
         self.assertIn("## Checks", report)
         self.assertIn("Set `LAMBDA_IMAGE_URI`", report)
+
+    def test_report_json_writes_attachable_audit_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = cli.default_config()
+            cfg["lambda_image_uri"] = "123456789012.dkr.ecr.us-east-1.amazonaws.com/app:sha-abc123"
+            cli.write_config(root, cfg)
+            with patch.object(cli, "repo_root", return_value=root):
+                with redirect_stdout(io.StringIO()):
+                    result = cli.main(["report", "--format", "json"])
+
+            report_path = root / cli.AUDIT_REPORT
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertEqual(payload["kind"], "audit-evidence")
+        self.assertIn("controls", payload)
+        self.assertIn("policy_presets", payload)
+        self.assertIn("least_privilege", payload)
+        self.assertIn(str(cli.AUDIT_REPORT), payload["attachable_evidence"])
 
     def test_readiness_breakdown_groups_scores_by_area(self) -> None:
         checks = [
@@ -768,6 +864,11 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("Require separate AWS plan role", deploy_workflow)
         self.assertIn("role-to-assume: ${{ secrets.AWS_PLAN_ROLE_TO_ASSUME_ARN }}", deploy_workflow)
         self.assertNotIn("AWS_PLAN_ROLE_TO_ASSUME_ARN || secrets.AWS_ROLE_TO_ASSUME_ARN", deploy_workflow)
+        self.assertIn("environment: ${{ vars.PROD_APPROVAL_ENVIRONMENT || 'prod' }}", deploy_workflow)
+        self.assertIn("LAMBDA_IMAGE_URI must use an immutable tag or digest", deploy_workflow)
+        self.assertIn("Smoke test Lambda health endpoint", deploy_workflow)
+        self.assertIn("if: env.ENABLE_HTTP_VALIDATION == 'true'", deploy_workflow)
+        self.assertIn("zaproxy/action-baseline", deploy_workflow)
         self.assertIn("id-token: write", deploy_workflow)
         self.assertIn("pull-requests: write", deploy_workflow)
 
@@ -777,10 +878,14 @@ class DevSecOpsCliTests(unittest.TestCase):
     def test_terraform_security_hardening_contract(self) -> None:
         variables_tf = (ROOT_DIR / "terraform/variables.tf").read_text(encoding="utf-8")
         module_variables_tf = (ROOT_DIR / "terraform/modules/lambda/variables.tf").read_text(encoding="utf-8")
+        api_gateway_variables_tf = (ROOT_DIR / "terraform/modules/api-gateway/variables.tf").read_text(encoding="utf-8")
         lambda_tf = (ROOT_DIR / "terraform/modules/lambda/main.tf").read_text(encoding="utf-8")
         storage_tf = (ROOT_DIR / "terraform/modules/storage/main.tf").read_text(encoding="utf-8")
 
         self.assertIn("lambda_image_uri must be empty for validation-only runs or an immutable ECR image URI", variables_tf)
+        self.assertIn("environment_config.prod.cors_allowed_origins must not contain wildcard", variables_tf)
+        self.assertIn("environment_config values must stay within Lambda/API limits", variables_tf)
+        self.assertIn("cors_allowed_origins must contain at least one non-empty origin", api_gateway_variables_tf)
         self.assertIn("lambda_image_uri must be empty for validation-only runs or an immutable ECR image URI", module_variables_tf)
         self.assertIn("precondition", lambda_tf)
         self.assertIn("latest|bootstrap", lambda_tf)

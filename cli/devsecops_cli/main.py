@@ -31,7 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback guard
     tomllib = None  # type: ignore[assignment]
 
 
-VERSION = "0.6.1"
+VERSION = "0.7.0"
 CONFIG_SCHEMA_VERSION = 1
 CONFIG_FILE = ".devsecops-pipeline.toml"
 EXIT_OK = 0
@@ -42,6 +42,7 @@ EXIT_UNEXPECTED_ERROR = 70
 EXIT_INTERRUPTED = 130
 DIST_DIR = Path("dist/devsecops")
 GENERATED_TFVARS = Path("terraform/generated.auto.tfvars")
+AUDIT_REPORT = DIST_DIR / "audit-report.json"
 SNAPSHOT_DIR = Path(".devsecops/snapshots")
 SNAPSHOT_FILES = [
     Path(CONFIG_FILE),
@@ -51,6 +52,7 @@ SNAPSHOT_FILES = [
     DIST_DIR / "github-setup.sh",
     DIST_DIR / "setup-checklist.md",
     DIST_DIR / "readiness-report.md",
+    AUDIT_REPORT,
 ]
 SNAPSHOT_FILE_PATHS = {str(path) for path in SNAPSHOT_FILES}
 GENERATED_ARTIFACT_DOC = "docs/generated-artifacts.md"
@@ -64,6 +66,20 @@ PRESET_DESCRIPTIONS = {
     "strict": "Validation-focused settings with HTTP smoke testing and DAST enabled.",
     "enterprise": "Locked-down CORS, longer log retention, and stricter production gates.",
     "student-demo": "Small, simple settings for classroom demos and short-lived walkthroughs.",
+}
+PRESET_POSTURES = {
+    "minimal": "Development-only posture. Keeps deploy approval and plan-role separation, but allows wildcard CORS and disables scanner/validation gates.",
+    "balanced": "Baseline posture. Keeps production approval and separate plan role, uses explicit production CORS, and leaves workload validation opt-in.",
+    "strict": "Pre-production posture. Enables Snyk, HTTP validation, DAST, strict CORS, production approval, and separate plan role.",
+    "enterprise": "Production-oriented posture. Enables all validation/scanner controls, strict CORS, longer retention, and stricter throttling.",
+    "student-demo": "Demo posture. Optimized for short-lived walkthroughs; disables approval and plan-role controls and is not production-ready.",
+}
+PRESET_POSTURE_LABELS = {
+    "minimal": "development-only",
+    "balanced": "baseline",
+    "strict": "strict",
+    "enterprise": "production-oriented",
+    "student-demo": "demo-only",
 }
 ENVIRONMENTS = ["dev", "staging", "prod"]
 CONFIG_SET_PATHS = {
@@ -144,6 +160,19 @@ class EcrImageRef:
     repository: str
     tag: str | None = None
     digest: str | None = None
+
+
+@dataclass(frozen=True)
+class Control:
+    id: str
+    title: str
+    cli_options: tuple[str, ...]
+    terraform: tuple[str, ...]
+    github: tuple[str, ...]
+    aws: tuple[str, ...]
+    scanners: tuple[str, ...]
+    audit_evidence: tuple[str, ...]
+    guidance: str
 
 
 @dataclass
@@ -242,7 +271,7 @@ def default_config() -> dict[str, Any]:
                 "log_retention_days": 365,
                 "api_throttling_burst_limit": 100,
                 "api_throttling_rate_limit": 200,
-                "cors_allowed_origins": ["*"],
+                "cors_allowed_origins": ["https://app.example.com"],
             },
         },
     }
@@ -367,6 +396,219 @@ def apply_cors_policy(cfg: dict[str, Any], strict: bool) -> None:
 
 def uses_strict_cors(cfg: dict[str, Any]) -> bool:
     return all(cfg["environments"][env_name]["cors_allowed_origins"] == STRICT_CORS_ORIGINS[env_name] for env_name in ENVIRONMENTS)
+
+
+CONTROL_CATALOG = [
+    Control(
+        id="oidc",
+        title="GitHub OIDC",
+        cli_options=("devsecops github setup --deploy-role-arn", "devsecops github setup --plan-role-arn"),
+        terraform=("Uses AWS provider credentials supplied by GitHub Actions OIDC-assumed roles.",),
+        github=("Job permissions include id-token: write only on AWS jobs.", "aws-actions/configure-aws-credentials assumes role secrets."),
+        aws=("IAM OIDC provider token.actions.githubusercontent.com.", "Separate deploy and plan IAM role trust policies."),
+        scanners=("None; this is an identity and credential control.",),
+        audit_evidence=("GitHub workflow permissions", "Configured AWS_ROLE_TO_ASSUME_ARN and AWS_PLAN_ROLE_TO_ASSUME_ARN secrets"),
+        guidance="Avoid long-lived AWS keys in GitHub. Scope trust policy subjects to the repository, branch, and workflow usage.",
+    ),
+    Control(
+        id="approval-gate",
+        title="Production Approval Gate",
+        cli_options=("use_prod_approval_environment", "devsecops compose", "devsecops preset apply"),
+        terraform=("No Terraform variable; this is enforced before Terraform apply starts.",),
+        github=("deploy-main uses environment: vars.PROD_APPROVAL_ENVIRONMENT || 'prod'.", "Deploy only runs on workflow_dispatch deploy/prod from main."),
+        aws=("Prevents unreviewed production AWS mutations by gating the deploy job before credentials are issued.",),
+        scanners=("None; this is a release authorization control.",),
+        audit_evidence=("PROD_APPROVAL_ENVIRONMENT repository variable", "deploy-main environment name", "Config validation policy check"),
+        guidance="Keep the value set to prod or another protected GitHub Environment with required reviewers.",
+    ),
+    Control(
+        id="plan-role",
+        title="Separate AWS Plan Role",
+        cli_options=("use_separate_aws_plan_role", "devsecops github setup --plan-role-arn"),
+        terraform=("Terraform plan uses backend state access and read-only refresh permissions.",),
+        github=("Terraform Plan job fails when AWS_PLAN_ROLE_TO_ASSUME_ARN is missing.", "No deploy-role fallback is generated."),
+        aws=("Plan role should read state, acquire locks, and refresh resources without mutating workload infrastructure.",),
+        scanners=("Trivy IaC scan runs before AWS-backed planning.",),
+        audit_evidence=("Require separate AWS plan role workflow step", "AWS_PLAN_ROLE_TO_ASSUME_ARN secret", "Branch protection required Terraform Plan check"),
+        guidance="Use a lower-privilege plan role. Do not reuse the deploy role for pull request planning.",
+    ),
+    Control(
+        id="state-lock",
+        title="Terraform State Lock",
+        cli_options=("backend.bucket", "backend.lock_table", "backend.region", "devsecops terraform bootstrap"),
+        terraform=("Rendered backend.tf uses S3 with encrypt=true and DynamoDB locking.", "terraform/bootstrap creates the bucket and lock table."),
+        github=("Plan and deploy jobs run terraform init against the configured backend.",),
+        aws=("S3 stores encrypted Terraform state.", "DynamoDB lock table prevents concurrent state writes."),
+        scanners=("Trivy scans Terraform backend-adjacent IaC for high and critical findings.",),
+        audit_evidence=("dist/devsecops/backend.tf", "backend settings in audit report", "Readiness backend checks"),
+        guidance="Use a dedicated state bucket and lock table with access limited to plan/deploy roles.",
+    ),
+    Control(
+        id="immutable-image",
+        title="Immutable Lambda Image",
+        cli_options=("lambda_image_uri", "devsecops preflight --image-uri", "devsecops config set lambda_image_uri"),
+        terraform=("lambda_image_uri validation rejects missing production values and mutable latest/bootstrap tags.", "Lambda module precondition prevents apply without an immutable image."),
+        github=("Deploy job requires LAMBDA_IMAGE_URI and rejects latest/bootstrap.", "Rollback captures the previous Lambda image URI."),
+        aws=("Lambda function code is updated to the configured immutable image.", "ECR image region is checked by CLI preflight."),
+        scanners=("Snyk scans the configured image when ENABLE_SNYK_SCAN=true.",),
+        audit_evidence=("LAMBDA_IMAGE_URI repository variable", "Terraform variable validation", "Preflight checks"),
+        guidance="Use an image digest or an immutable release tag. Do not deploy latest, bootstrap, or moving tags.",
+    ),
+    Control(
+        id="cors",
+        title="Production CORS",
+        cli_options=("environments.<env>.cors_allowed_origins", "devsecops compose strict CORS", "devsecops preset apply strict"),
+        terraform=("environment_config passes CORS origins to the API Gateway module.", "Terraform validation rejects wildcard prod CORS."),
+        github=("Generated tfvars are consumed by plan and deploy workflow Terraform runs.",),
+        aws=("API Gateway HTTP API cors_configuration.allow_origins is set from Terraform.",),
+        scanners=("Trivy scans API Gateway IaC for configuration findings.",),
+        audit_evidence=("terraform/generated.auto.tfvars", "Audit control state", "Config validation policy check"),
+        guidance="Use explicit HTTPS origins for production. Wildcard CORS is only acceptable for disposable demos.",
+    ),
+    Control(
+        id="iac-scan",
+        title="IaC Scan",
+        cli_options=("Always on in the tracked workflow",),
+        terraform=("Scans Terraform root and modules before plan/apply jobs.",),
+        github=("Security and Terraform Validate runs aquasecurity/trivy-action with HIGH,CRITICAL severity.",),
+        aws=("Blocks known high-risk IaC findings before AWS resources are changed.",),
+        scanners=("Trivy config scan.",),
+        audit_evidence=("Security and Terraform Validate workflow result", "Trivy action configuration"),
+        guidance="Keep the validation job required in branch protection.",
+    ),
+    Control(
+        id="snyk",
+        title="Snyk Container Scan",
+        cli_options=("enable_snyk_scan", "devsecops compose", "devsecops preset apply strict"),
+        terraform=("No Terraform variable; scan gates deploy before Terraform apply.",),
+        github=("Deploy job requires SNYK_TOKEN when ENABLE_SNYK_SCAN=true.", "Configured image is scanned before apply."),
+        aws=("ECR login is used to read the configured image for scanning.",),
+        scanners=("Snyk container test with high severity threshold.",),
+        audit_evidence=("ENABLE_SNYK_SCAN repository variable", "SNYK_TOKEN secret readiness", "Deploy workflow Snyk steps"),
+        guidance="Enable for production images and configure SNYK_TOKEN in the repository or organization.",
+    ),
+    Control(
+        id="health-validation",
+        title="HTTP Health Validation",
+        cli_options=("enable_http_validation", "devsecops health", "devsecops compose"),
+        terraform=("Outputs api_gateway_health_url for the deployed API Gateway endpoint.",),
+        github=("Deploy job curls /health when ENABLE_HTTP_VALIDATION=true.", "Rollback runs when enabled validation fails."),
+        aws=("API Gateway invokes Lambda through the deployed public endpoint.",),
+        scanners=("None; this is a smoke validation gate.",),
+        audit_evidence=("ENABLE_HTTP_VALIDATION repository variable", "api_gateway_health_url Terraform output", "Health command output"),
+        guidance="Enable once the workload implements GET /health with a non-sensitive successful response.",
+    ),
+    Control(
+        id="dast",
+        title="DAST",
+        cli_options=("enable_dast", "devsecops compose", "devsecops preset apply strict"),
+        terraform=("Outputs api_gateway_invoke_url for scanner target discovery.",),
+        github=("Deploy job runs zaproxy/action-baseline when ENABLE_DAST=true.", "Rollback runs when enabled DAST fails."),
+        aws=("Scans the deployed API Gateway public invoke URL.",),
+        scanners=("OWASP ZAP baseline passive scan.",),
+        audit_evidence=("ENABLE_DAST repository variable", "ZAP baseline workflow step", "Scanner artifact zap-baseline-prod"),
+        guidance="Enable only when the live API surface is safe for passive unauthenticated scanning.",
+    ),
+    Control(
+        id="rollback",
+        title="Deployment Rollback",
+        cli_options=("No local config option; tracked deploy workflow behavior.", "devsecops github status"),
+        terraform=("Re-applies Terraform with the previous Lambda image URI after rollback.",),
+        github=("Deploy job captures current image and restores it on failed apply, health validation, or DAST.",),
+        aws=("aws lambda update-function-code restores the previous image.",),
+        scanners=("Rollback is triggered by failed Snyk, health, or DAST gates when applicable.",),
+        audit_evidence=("Deploy workflow rollback step", "GitHub Actions run logs", "AWS Lambda image after rollback"),
+        guidance="Treat workflow rollback as cloud deployment rollback; local snapshot restore is separate.",
+    ),
+    Control(
+        id="audit-report",
+        title="Audit Evidence Report",
+        cli_options=("devsecops report --format json", "devsecops report --format markdown"),
+        terraform=("Includes generated Terraform variable and backend control mappings.",),
+        github=("Can be attached to pull requests, workflow artifacts, or release records.",),
+        aws=("Summarizes role guidance and AWS-facing control evidence.",),
+        scanners=("Records scanner control states and readiness checks.",),
+        audit_evidence=("dist/devsecops/audit-report.json", "dist/devsecops/readiness-report.md"),
+        guidance="Generate after config/render/readiness changes and attach the JSON to review or release evidence.",
+    ),
+]
+
+CONTROL_ALIASES = {
+    "all": "all",
+    "approval": "approval-gate",
+    "approval-gates": "approval-gate",
+    "backend": "state-lock",
+    "container-scan": "snyk",
+    "health": "health-validation",
+    "http-validation": "health-validation",
+    "image": "immutable-image",
+    "immutable-images": "immutable-image",
+    "plan": "plan-role",
+    "plan-role": "plan-role",
+    "prod-approval": "approval-gate",
+    "production-approval": "approval-gate",
+    "report": "audit-report",
+    "trivy": "iac-scan",
+    "zap": "dast",
+}
+
+
+def control_catalog() -> list[Control]:
+    return list(CONTROL_CATALOG)
+
+
+def normalize_control_topic(topic: str) -> str:
+    normalized = topic.strip().lower().replace("_", "-")
+    return CONTROL_ALIASES.get(normalized, normalized)
+
+
+def control_by_id(topic: str) -> Control | None:
+    normalized = normalize_control_topic(topic)
+    return next((control for control in CONTROL_CATALOG if control.id == normalized), None)
+
+
+def has_wildcard_cors(origins: Any) -> bool:
+    return isinstance(origins, list) and any(str(origin).strip() == "*" for origin in origins)
+
+
+def control_state(cfg: dict[str, Any], control_id: str) -> str:
+    if control_id in {"oidc", "state-lock", "iac-scan", "rollback"}:
+        return "ON"
+    if control_id == "approval-gate":
+        return "ON" if cfg["use_prod_approval_environment"] else "RISK"
+    if control_id == "plan-role":
+        return "ON" if cfg["use_separate_aws_plan_role"] else "RISK"
+    if control_id == "immutable-image":
+        image_uri = str(cfg.get("lambda_image_uri", ""))
+        if image_uri and is_immutable_image(image_uri):
+            return "ON"
+        return "RISK" if image_uri else "TODO"
+    if control_id == "cors":
+        return "RISK" if has_wildcard_cors(cfg["environments"]["prod"]["cors_allowed_origins"]) else "ON"
+    if control_id == "snyk":
+        return "ON" if cfg["enable_snyk_scan"] else "OFF"
+    if control_id == "health-validation":
+        return "ON" if cfg["enable_http_validation"] else "RISK"
+    if control_id == "dast":
+        return "ON" if cfg["enable_dast"] else "OFF"
+    if control_id == "audit-report":
+        return "AVAILABLE"
+    return "UNKNOWN"
+
+
+def control_to_dict(control: Control, cfg: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": control.id,
+        "title": control.title,
+        "state": control_state(cfg, control.id),
+        "cli_options": list(control.cli_options),
+        "terraform": list(control.terraform),
+        "github": list(control.github),
+        "aws": list(control.aws),
+        "scanners": list(control.scanners),
+        "audit_evidence": list(control.audit_evidence),
+        "guidance": control.guidance,
+    }
 
 
 def compose_config(current: dict[str, Any], answers: dict[str, bool]) -> dict[str, Any]:
@@ -1425,6 +1667,17 @@ def validate_config(cfg: dict[str, Any]) -> list[Check]:
                 str(cfg.get(key)) if isinstance(cfg.get(key), bool) else "Expected boolean.",
             )
         )
+    image_uri = str(cfg.get("lambda_image_uri", ""))
+    if image_uri:
+        checks.append(
+            Check(
+                "Lambda image immutability policy",
+                "OK" if is_immutable_image(image_uri) else "FAIL",
+                image_uri if is_immutable_image(image_uri) else "Use an immutable tag or digest; latest/bootstrap are not allowed.",
+            )
+        )
+    else:
+        checks.append(Check("Lambda image immutability policy", "WARN", "Required before production deploy."))
     for env_name, env_cfg in cfg["environments"].items():
         numeric_rules = {
             "lambda_memory_size": (128, 10240),
@@ -1445,13 +1698,52 @@ def validate_config(cfg: dict[str, Any]) -> list[Check]:
                 )
             )
         origins = env_cfg["cors_allowed_origins"]
+        valid_origins = isinstance(origins, list) and all(isinstance(item, str) and item for item in origins)
         checks.append(
             Check(
                 f"{env_name}.cors_allowed_origins",
-                "OK" if isinstance(origins, list) and all(isinstance(item, str) for item in origins) else "FAIL",
-                ",".join(origins) if isinstance(origins, list) else "Expected list.",
+                "OK" if valid_origins else "FAIL",
+                ",".join(origins) if valid_origins else "Expected non-empty list of strings.",
             )
         )
+    prod_origins = cfg["environments"].get("prod", {}).get("cors_allowed_origins", [])
+    prod_origins_detail = ",".join(prod_origins) if isinstance(prod_origins, list) and all(isinstance(item, str) for item in prod_origins) else "Expected non-empty list of strings."
+    checks.append(
+        Check(
+            "Production CORS policy",
+            "WARN" if has_wildcard_cors(prod_origins) else "OK",
+            "Wildcard CORS is not production-safe. Use explicit HTTPS origins."
+            if has_wildcard_cors(prod_origins)
+            else prod_origins_detail,
+        )
+    )
+    checks.append(
+        Check(
+            "Production approval gate policy",
+            "OK" if cfg["use_prod_approval_environment"] else "WARN",
+            f"GitHub environment: {prod_approval_environment(cfg)}"
+            if cfg["use_prod_approval_environment"]
+            else "Production deploy approval is disabled in local config.",
+        )
+    )
+    checks.append(
+        Check(
+            "Separate plan role policy",
+            "OK" if cfg["use_separate_aws_plan_role"] else "WARN",
+            "AWS_PLAN_ROLE_TO_ASSUME_ARN is required and deploy-role fallback is disabled."
+            if cfg["use_separate_aws_plan_role"]
+            else "Local config disables the separate plan-role posture; workflow still requires AWS_PLAN_ROLE_TO_ASSUME_ARN.",
+        )
+    )
+    checks.append(
+        Check(
+            "Deployment validation policy",
+            "OK" if cfg["enable_http_validation"] else "WARN",
+            "HTTP /health validation is enabled."
+            if cfg["enable_http_validation"]
+            else "ENABLE_HTTP_VALIDATION is false; strict production validation requires a post-deploy health gate.",
+        )
+    )
     return checks
 
 
@@ -2259,6 +2551,19 @@ def collect_checks(root: Path, cfg: dict[str, Any], deep: bool = False) -> list[
     checks.append(Check("Backend lock table", "OK", cfg["backend"]["lock_table"]))
 
     config_failures = [check for check in validate_config(cfg) if check.status == "FAIL"]
+    config_policy_gaps = [
+        check
+        for check in validate_config(cfg)
+        if check.name
+        in {
+            "Lambda image immutability policy",
+            "Production CORS policy",
+            "Production approval gate policy",
+            "Separate plan role policy",
+            "Deployment validation policy",
+        }
+        and check.status in {"WARN", "FAIL"}
+    ]
     checks.append(
         Check(
             "Config schema",
@@ -2266,6 +2571,15 @@ def collect_checks(root: Path, cfg: dict[str, Any], deep: bool = False) -> list[
             "Environment settings valid."
             if not config_failures
             else f"{len(config_failures)} invalid setting(s). Run `devsecops validate-config`.",
+        )
+    )
+    checks.append(
+        Check(
+            "Security policy posture",
+            "OK" if not config_policy_gaps else "WARN",
+            "No production-risky config values detected."
+            if not config_policy_gaps
+            else f"{len(config_policy_gaps)} policy gap(s). Run `devsecops config validate --strict`.",
         )
     )
 
@@ -2411,6 +2725,8 @@ def readiness_action_detail_for_check(check: Check) -> str:
         return "Publish the configured ECR image or update `lambda_image_uri` to an existing immutable image."
     if check.name == "Lambda image URI":
         return "Set `LAMBDA_IMAGE_URI` to an immutable image with `devsecops set lambda_image_uri <image-uri> --render`."
+    if check.name == "Lambda image immutability policy":
+        return "Set `lambda_image_uri` to an immutable image tag or digest and rerun `devsecops config validate --strict`."
     if check.name == "Lambda image shape":
         return "Use an ECR Lambda image URI such as `123456789012.dkr.ecr.us-east-1.amazonaws.com/app:sha-abc123`."
     if check.name == "Lambda image immutability":
@@ -2421,6 +2737,16 @@ def readiness_action_detail_for_check(check: Check) -> str:
         return "Set `backend.bucket` to a real S3 state bucket and run `devsecops render`."
     if check.name == "Config schema":
         return "Run `devsecops validate-config`, fix invalid values, then run `devsecops render`."
+    if check.name == "Security policy posture":
+        return "Run `devsecops config validate --strict` and fix the listed production policy gaps."
+    if check.name == "Production CORS policy":
+        return "Set `environments.prod.cors_allowed_origins` to explicit HTTPS origins and run `devsecops render`."
+    if check.name == "Production approval gate policy":
+        return "Set `use_prod_approval_environment` to true and protect the `prod` GitHub Environment."
+    if check.name == "Separate plan role policy":
+        return "Set `use_separate_aws_plan_role` to true and configure `AWS_PLAN_ROLE_TO_ASSUME_ARN`."
+    if check.name == "Deployment validation policy":
+        return "Set `enable_http_validation` to true after the workload implements `GET /health`."
     if check.name == "Rendered tfvars":
         return "Run `devsecops render`."
     if check.name == "Git branch":
@@ -2442,7 +2768,16 @@ def troubleshooting_anchor_for_check(check: Check) -> str:
     name = check.name
     if name == "Local config":
         return "#local-config-is-missing"
-    if name in {"Project name", "Config schema"} or name.startswith("Config ") or "." in name:
+    if name in {
+        "Project name",
+        "Config schema",
+        "Security policy posture",
+        "Lambda image immutability policy",
+        "Production CORS policy",
+        "Production approval gate policy",
+        "Separate plan role policy",
+        "Deployment validation policy",
+    } or name.startswith("Config ") or "." in name:
         return "#config-validation-fails"
     if name == "Project files":
         return "#project-files-are-missing"
@@ -2803,11 +3138,109 @@ def markdown_report(cfg: dict[str, Any], checks: list[Check]) -> str:
             "## Checks\n\n" + markdown_table(["Check", "Status", "Detail"], check_rows),
             "## Environments\n\n"
             + markdown_table(["Env", "Memory", "Timeout", "Logs", "Burst/Rate", "CORS"], env_report_rows),
-            "## Controls\n\n" + markdown_table(["Control", "State", "Notes"], control_report_rows),
+            "## Controls\n\n" + markdown_table(["Control", "State", "CLI", "Generated Behavior"], control_report_rows),
             "## Next Actions\n\n" + "\n".join(next_actions(cfg, checks)),
             "",
         ]
     )
+
+
+def preset_dict(name: str) -> dict[str, Any]:
+    cfg = preset_config(name)
+    return {
+        "name": name,
+        "posture": PRESET_POSTURE_LABELS[name],
+        "description": PRESET_DESCRIPTIONS[name],
+        "security_posture": PRESET_POSTURES[name],
+        "enable_snyk_scan": cfg["enable_snyk_scan"],
+        "enable_http_validation": cfg["enable_http_validation"],
+        "enable_dast": cfg["enable_dast"],
+        "use_prod_approval_environment": cfg["use_prod_approval_environment"],
+        "use_separate_aws_plan_role": cfg["use_separate_aws_plan_role"],
+        "prod_cors_allowed_origins": cfg["environments"]["prod"]["cors_allowed_origins"],
+        "strict_policy_gaps": [
+            check_to_dict(check)
+            for check in validate_config(cfg)
+            if check.status in {"WARN", "FAIL"}
+            and check.name
+            in {
+                "Lambda image immutability policy",
+                "Production CORS policy",
+                "Production approval gate policy",
+                "Separate plan role policy",
+                "Deployment validation policy",
+            }
+        ],
+    }
+
+
+def least_privilege_guidance() -> dict[str, Any]:
+    return {
+        "plan_role": {
+            "secret": PLAN_ROLE_SECRET,
+            "purpose": "Pull request and manual Terraform plans.",
+            "allow": [
+                "Read Terraform state from the dedicated S3 backend bucket.",
+                "Acquire and release DynamoDB state locks.",
+                "Read/describe AWS resources needed by Terraform refresh.",
+                "Read the configured ECR image metadata when planning image-dependent resources.",
+            ],
+            "avoid": [
+                "Do not grant broad create/update/delete permissions for workload resources.",
+                "Do not reuse AWS_ROLE_TO_ASSUME_ARN for pull request planning.",
+                "Do not allow forked pull requests to assume AWS roles.",
+            ],
+        },
+        "deploy_role": {
+            "secret": "AWS_ROLE_TO_ASSUME_ARN",
+            "purpose": "Manual production deploy workflow from main after approval.",
+            "allow": [
+                "Apply Terraform-managed KMS, S3, ECR, Lambda, API Gateway, CloudWatch Logs, SQS, and IAM resources.",
+                "Pass only the Terraform-managed Lambda execution role.",
+                "Read and update the configured Lambda function image for rollback.",
+                "Read the configured ECR image for optional container scanning.",
+            ],
+            "avoid": [
+                "Do not grant access outside the project/environment resource naming boundary once names are stable.",
+                "Do not use the deploy role for PR plans.",
+                "Do not store static AWS access keys in GitHub secrets.",
+            ],
+        },
+        "reference": "AWS_policy.md",
+    }
+
+
+def audit_report_payload(cfg: dict[str, Any], checks: list[Check], deep: bool = False) -> dict[str, Any]:
+    validation_checks = validate_config(cfg)
+    return {
+        "kind": "audit-evidence",
+        "schema_version": 1,
+        "cli_version": VERSION,
+        "generated_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "project": {
+            "name": cfg["project_name"],
+            "aws_region": cfg["aws_region"],
+            "config_schema_version": cfg.get("schema_version"),
+        },
+        "readiness": checks_payload("readiness", checks, context={"deep": deep}),
+        "config_validation": {
+            "strict_pass": not any(check.status in {"WARN", "FAIL"} for check in validation_checks),
+            "checks": [check_to_dict(check) for check in validation_checks],
+        },
+        "controls": [control_to_dict(control, cfg) for control in control_catalog()],
+        "policy_presets": [preset_dict(name) for name in PRESET_ORDER],
+        "least_privilege": least_privilege_guidance(),
+        "attachable_evidence": [
+            str(AUDIT_REPORT),
+            str(DIST_DIR / "readiness-report.md"),
+            str(GENERATED_TFVARS),
+            str(DIST_DIR / "github-setup.sh"),
+        ],
+    }
+
+
+def audit_report_json(cfg: dict[str, Any], checks: list[Check], deep: bool = False) -> str:
+    return json.dumps(audit_report_payload(cfg, checks, deep=deep), indent=2, sort_keys=True) + "\n"
 
 
 def next_actions(cfg: dict[str, Any], checks: list[Check]) -> list[str]:
@@ -2857,13 +3290,22 @@ def preset_rows() -> list[list[str]]:
     rows: list[list[str]] = []
     for name in PRESET_ORDER:
         cfg = preset_config(name)
+        scanners = "Snyk" if cfg["enable_snyk_scan"] else "none"
+        validation = "/health"
+        if cfg["enable_dast"]:
+            validation += " + DAST"
+        if not cfg["enable_http_validation"] and not cfg["enable_dast"]:
+            validation = "none"
+        prod_cors = "wildcard" if has_wildcard_cors(cfg["environments"]["prod"]["cors_allowed_origins"]) else "explicit"
         rows.append(
             [
                 name,
-                "on" if cfg["enable_snyk_scan"] else "off",
-                "on" if cfg["enable_http_validation"] else "off",
-                "on" if cfg["enable_dast"] else "off",
-                PRESET_DESCRIPTIONS[name],
+                PRESET_POSTURE_LABELS[name],
+                scanners,
+                validation,
+                prod_cors,
+                "on" if cfg["use_prod_approval_environment"] else "off",
+                "on" if cfg["use_separate_aws_plan_role"] else "off",
             ]
         )
     return rows
@@ -2892,7 +3334,11 @@ def preset_detail_rows(cfg: dict[str, Any]) -> list[list[str]]:
 
 
 def print_preset_list() -> None:
-    draw_table(["Preset", "Snyk", "HTTP", "DAST", "Description"], preset_rows(), title="Policy Presets")
+    draw_table(
+        ["Preset", "Posture", "Scanners", "Validation", "Prod CORS", "Approval", "Plan Role"],
+        preset_rows(),
+        title="Policy Preset Comparison",
+    )
 
 
 def print_preset_detail(name: str) -> int:
@@ -2901,7 +3347,7 @@ def print_preset_detail(name: str) -> int:
         print("Available presets: " + ", ".join(PRESET_ORDER))
         return 1
     cfg = preset_config(name)
-    draw_box(f"Preset: {name}", [PRESET_DESCRIPTIONS[name]])
+    draw_box(f"Preset: {name}", [PRESET_DESCRIPTIONS[name], PRESET_POSTURES[name]])
     print()
     draw_table(["Setting", "Value"], preset_detail_rows(cfg))
     return 0
@@ -2917,30 +3363,41 @@ def cmd_envs(args: argparse.Namespace) -> int:
     return 0
 
 
+def compact_join(items: tuple[str, ...], limit: int = 2) -> str:
+    selected = list(items[:limit])
+    if len(items) > limit:
+        selected.append(f"+{len(items) - limit} more")
+    return "; ".join(selected)
+
+
+def generated_behavior_summary(control: Control) -> str:
+    parts = [
+        f"Terraform: {control.terraform[0]}",
+        f"GitHub: {control.github[0]}",
+        f"AWS: {control.aws[0]}",
+        f"Scanner: {control.scanners[0]}",
+    ]
+    return " | ".join(parts)
+
+
 def control_rows(cfg: dict[str, Any]) -> list[list[str]]:
-    image_status = "ON" if cfg["lambda_image_uri"] else "TODO"
-    snyk_status = "ON" if cfg["enable_snyk_scan"] else "OFF"
-    health_status = "ON" if cfg["enable_http_validation"] else "OFF"
-    dast_status = "ON" if cfg["enable_dast"] else "OFF"
-    approval_status = "ON" if cfg["use_prod_approval_environment"] else "OFF"
-    plan_role_status = "ON" if cfg["use_separate_aws_plan_role"] else "OFF"
     return [
-        ["GitHub OIDC", "ON", "Deploy and plan roles use short-lived AWS credentials."],
-        ["Prod approval", approval_status, f"Deploy job uses `{prod_approval_environment(cfg)}` GitHub environment."],
-        ["Separate plan role", plan_role_status, "Terraform plan workflows require `AWS_PLAN_ROLE_TO_ASSUME_ARN`; deploy-role fallback is disabled."],
-        ["Terraform state lock", "ON", f"DynamoDB table: {cfg['backend']['lock_table']}"],
-        ["IaC scan", "ON", "Trivy config scan in GitHub Actions."],
-        ["Immutable image", image_status, "LAMBDA_IMAGE_URI must avoid latest/bootstrap."],
-        ["Container scan", snyk_status, "Snyk runs when enabled and SNYK_TOKEN is configured."],
-        ["Rollback", "ON", "Previous Lambda image is restored on failed deploy validation."],
-        ["HTTP health", health_status, "Calls /health when ENABLE_HTTP_VALIDATION=true."],
-        ["DAST", dast_status, "OWASP ZAP baseline when ENABLE_DAST=true."],
+        [
+            control.title,
+            control_state(cfg, control.id),
+            compact_join(control.cli_options),
+            generated_behavior_summary(control),
+        ]
+        for control in control_catalog()
     ]
 
 
 def cmd_controls(args: argparse.Namespace) -> int:
     cfg = load_config(repo_root())
-    draw_table(["Control", "State", "Notes"], control_rows(cfg), title="Pipeline Controls")
+    if getattr(args, "format", "human") == "json":
+        emit_json({"kind": "control-catalog", "controls": [control_to_dict(control, cfg) for control in control_catalog()]})
+    else:
+        draw_table(["Control", "State", "CLI", "Generated Behavior"], control_rows(cfg), title="Pipeline Controls")
     return 0
 
 
@@ -2993,7 +3450,7 @@ def render_dashboard(root: Path, mode: str = "full", clear: bool = False) -> Non
         title="Environment Configuration",
     )
     print()
-    draw_table(["Control", "State", "Notes"], control_rows(cfg), title="Pipeline Controls")
+    draw_table(["Control", "State", "CLI", "Generated Behavior"], control_rows(cfg), title="Pipeline Controls")
     print()
     draw_box("Architecture", architecture_lines())
 
@@ -3065,6 +3522,8 @@ def cmd_validate_config(args: argparse.Namespace) -> int:
     cfg = load_config(repo_root())
     checks = validate_config(cfg)
     emit_check_output("Config", checks, output_format=getattr(args, "format", "human"))
+    if getattr(args, "strict", False):
+        return strict_exit_code(checks, strict=True, fail_on_warn=True)
     return EXIT_VALIDATION_FAILED if any(check.status == "FAIL" for check in checks) else EXIT_OK
 
 
@@ -3202,15 +3661,16 @@ def cmd_report(args: argparse.Namespace) -> int:
     root = repo_root()
     cfg = load_config(root)
     checks = collect_checks(root, cfg, deep=args.deep)
-    report = markdown_report(cfg, checks)
+    output_format = getattr(args, "format", "markdown")
+    report = audit_report_json(cfg, checks, deep=args.deep) if output_format == "json" else markdown_report(cfg, checks)
     if args.output:
         path = Path(args.output)
     else:
-        path = root / DIST_DIR / "readiness-report.md"
+        path = root / (AUDIT_REPORT if output_format == "json" else DIST_DIR / "readiness-report.md")
     if not path.is_absolute():
         path = root / path
     path.parent.mkdir(parents=True, exist_ok=True)
-    snapshot_before_change(root, "report", f"Before writing readiness report to {path.relative_to(root) if path.is_relative_to(root) else path}.")
+    snapshot_before_change(root, "report", f"Before writing report to {path.relative_to(root) if path.is_relative_to(root) else path}.")
     path.write_text(report, encoding="utf-8")
     print(ok("Wrote ") + str(path))
     if args.print:
@@ -3852,40 +4312,36 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     return subprocess.run(command, cwd=root, check=False).returncode
 
 
-def explain_text(topic: str) -> list[str]:
-    topics = {
-        "rollback": [
-            "Rollback captures the current Lambda image before apply.",
-            "If Terraform apply, optional health validation, or optional DAST fails, CI updates the function back to the previous image URI and re-applies Terraform to remove state drift.",
-        ],
-        "oidc": [
-            "GitHub Actions OIDC exchanges a GitHub identity token for short-lived AWS credentials.",
-            "This avoids long-lived AWS keys in GitHub secrets and lets IAM scope deploy rights to repo, branch, and environment.",
-        ],
-        "dast": [
-            "DAST runs OWASP ZAP baseline against the deployed API Gateway URL.",
-            "It is disabled by default because this repository no longer owns application routes. Enable it only when the workload HTTP surface is safe for passive scanning.",
-        ],
-        "image": [
-            "The pipeline deploys a prebuilt Lambda container image through LAMBDA_IMAGE_URI.",
-            "Use a digest or immutable tag. The workflow rejects latest/bootstrap because rollback and auditability require a stable image identity.",
-        ],
-        "backend": [
-            "Terraform remote state should live in S3 with DynamoDB locking.",
-            "The CLI render command writes a backend.tf template; bootstrap can plan/apply the state bucket and lock table.",
-        ],
-    }
-    return topics.get(
-        topic,
-        [
-            "Available topics: rollback, oidc, dast, image, backend.",
-            "Use `devsecops explain <topic>` for a focused control explanation.",
-        ],
-    )
+def explain_text(topic: str, cfg: dict[str, Any] | None = None) -> list[str]:
+    cfg = cfg or default_config()
+    normalized = normalize_control_topic(topic)
+    if normalized == "all":
+        return [
+            "Available controls:",
+            *[f"{control.id}: {control.title} ({control_state(cfg, control.id)})" for control in control_catalog()],
+            "Use `devsecops explain <control>` for concrete CLI, Terraform, GitHub, AWS, scanner, and audit behavior.",
+        ]
+    control = control_by_id(topic)
+    if not control:
+        return [
+            f"Unknown control: {topic}",
+            "Available controls: " + ", ".join(control.id for control in control_catalog()),
+        ]
+    return [
+        f"Control: {control.title}",
+        f"State: {control_state(cfg, control.id)}",
+        "CLI: " + "; ".join(control.cli_options),
+        "Terraform: " + " ".join(control.terraform),
+        "GitHub: " + " ".join(control.github),
+        "AWS: " + " ".join(control.aws),
+        "Scanners: " + " ".join(control.scanners),
+        "Audit evidence: " + "; ".join(control.audit_evidence),
+        "Guidance: " + control.guidance,
+    ]
 
 
 def cmd_explain(args: argparse.Namespace) -> int:
-    draw_box(f"Explain: {args.topic}", explain_text(args.topic))
+    draw_box(f"Explain: {args.topic}", explain_text(args.topic, load_config(repo_root())))
     return 0
 
 
@@ -4467,6 +4923,7 @@ def build_parser() -> argparse.ArgumentParser:
               devsecops readiness
               devsecops readiness --strict --format compact
               devsecops report
+              devsecops report --format json
 
             Docs:
               README.md
@@ -4507,6 +4964,7 @@ def build_parser() -> argparse.ArgumentParser:
     envs_parser.set_defaults(func=cmd_envs)
 
     controls_parser = subparsers.add_parser("controls", help=argparse.SUPPRESS)
+    controls_parser.add_argument("--format", choices=["human", "json"], default="human", help="Output mode.")
     controls_parser.set_defaults(func=cmd_controls)
 
     architecture_parser = subparsers.add_parser("architecture", help=argparse.SUPPRESS)
@@ -4589,9 +5047,10 @@ def build_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--dry-run", action="store_true", help="Preview generated files without writing them.")
     render_parser.set_defaults(func=cmd_render)
 
-    report_parser = subparsers.add_parser("report", help="Export a CLI-owned Markdown readiness report.")
+    report_parser = subparsers.add_parser("report", help="Export CLI-owned readiness or audit evidence reports.")
     report_parser.add_argument("--deep", action="store_true", help="Include Terraform/AWS deep checks.")
-    report_parser.add_argument("--output", help="Report output path. Defaults to dist/devsecops/readiness-report.md.")
+    report_parser.add_argument("--format", choices=["markdown", "json"], default="markdown", help="Report output format.")
+    report_parser.add_argument("--output", help="Report output path. Defaults to dist/devsecops/readiness-report.md or audit-report.json.")
     report_parser.add_argument("--print", action="store_true", help="Print report after writing it.")
     report_parser.set_defaults(func=cmd_report)
 
@@ -4703,6 +5162,7 @@ def build_parser() -> argparse.ArgumentParser:
     set_parser.set_defaults(func=cmd_set)
 
     validate_config_parser = subparsers.add_parser("validate-config", help=argparse.SUPPRESS)
+    validate_config_parser.add_argument("--strict", action="store_true", help="Exit non-zero on production-risk warnings.")
     validate_config_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     validate_config_parser.set_defaults(func=cmd_validate_config)
 
@@ -4789,6 +5249,8 @@ def build_parser() -> argparse.ArgumentParser:
     config_new_parser.set_defaults(func=cmd_config)
 
     config_validate_parser = config_subparsers.add_parser("validate", help="Validate local source config values.")
+    config_validate_parser.add_argument("--strict", action="store_true", help="Exit non-zero on production-risk warnings.")
+    config_validate_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     config_validate_parser.set_defaults(func=cmd_config)
 
     config_diff_parser = config_subparsers.add_parser("diff", help="Show canonical config diff or compare against a preset.")

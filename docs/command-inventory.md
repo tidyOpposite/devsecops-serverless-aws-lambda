@@ -41,7 +41,7 @@ Use `devsecops menu` when you prefer the interactive path.
 | `devsecops preflight` | Stable | First success | Checks Lambda image URI shape, immutability, and region before production deploy. |
 | `devsecops health` | Stable | Operations | Validates the deployed `/health` endpoint outside GitHub Actions. Uses Terraform output unless `--url` is provided. |
 | `devsecops render` | Stable | Generation | Writes CLI-owned Terraform and GitHub helper artifacts. Use `--dry-run` to preview file changes. |
-| `devsecops report` | Stable | Reporting | Writes a CLI-owned Markdown readiness report. |
+| `devsecops report` | Stable | Reporting | Writes a CLI-owned Markdown readiness report or JSON audit evidence with `--format json`. |
 | `devsecops dashboard` | Stable | Diagnostics | Prints a one-screen readiness dashboard. |
 | `devsecops doctor` | Stable | Diagnostics | Primary diagnostics group for local, GitHub, AWS, branch, Actions, and all-in-one checks. |
 | `devsecops doctor local` | Stable | Diagnostics | Checks local readiness. `--deep` adds external Terraform/AWS checks and may vary by installed tools. |
@@ -58,7 +58,7 @@ Use `devsecops menu` when you prefer the interactive path.
 | `devsecops config` | Alias | Configuration | Compatibility shorthand for `devsecops config show`. |
 | `devsecops config show` | Stable | Configuration | Prints the current local source config as TOML or normalized JSON. |
 | `devsecops config new` | Stable | Configuration | Creates a clean schema-versioned config from a preset. Refuses to overwrite unless `--force` is passed. |
-| `devsecops config validate` | Stable | Configuration | Validates the local source config before Terraform or GitHub commands run. |
+| `devsecops config validate` | Stable | Configuration | Validates the local source config before Terraform or GitHub commands run. Use `--strict` to fail on production-risk warnings. |
 | `devsecops config diff` | Stable | Configuration | Shows canonical TOML drift or compares the current config against a preset. |
 | `devsecops config reset` | Stable | Configuration | Resets local source config to a clean preset after taking a snapshot. |
 | `devsecops config set` | Stable | Configuration | Sets one local config key. Prefer this over the legacy top-level `set` alias. |
@@ -92,7 +92,7 @@ Use `devsecops menu` when you prefer the interactive path.
 | `devsecops plan <env>` | Alias | Terraform | Compatibility alias for `devsecops terraform plan <env>`. |
 | `devsecops bootstrap` | Alias | Terraform | Compatibility alias for `devsecops terraform bootstrap`. |
 | `devsecops envs` | Support | Inspection | Prints environment settings. |
-| `devsecops controls` | Support | Inspection | Prints the security controls matrix. |
+| `devsecops controls` | Support | Inspection | Prints the security controls catalog. Supports `--format json`. |
 | `devsecops architecture` | Support | Inspection | Prints the architecture tree. |
 | `devsecops explain [topic]` | Support | Inspection | Explains a pipeline security control. |
 | `devsecops tui` | Experimental | UI | Optional Rich/Textual UI bridge. Requires installing optional dependencies. |
@@ -106,12 +106,14 @@ Use `devsecops menu` when you prefer the interactive path.
 | Clean config | `devsecops config new --preset balanced` |
 | Show config | `devsecops config show --format json` |
 | Validate config | `devsecops config validate` |
+| Strict config validation | `devsecops config validate --strict` |
 | Diff config | `devsecops config diff --preset strict` |
 | Set config | `devsecops config set backend.bucket my-state-bucket --render` |
 | Reset config | `devsecops config reset --preset minimal` |
 | Config schema | `devsecops config schema --format markdown` |
 | Render artifacts | `devsecops render` |
 | Render dry run | `devsecops render --dry-run` |
+| Audit evidence | `devsecops report --format json` |
 | First-success dry run | `devsecops dry-run --image-uri <immutable-ecr-image-uri>` |
 | Image preflight | `devsecops preflight --image-uri <immutable-ecr-image-uri>` |
 | Readiness | `devsecops readiness --format json` |
@@ -138,6 +140,7 @@ Use `devsecops menu` when you prefer the interactive path.
 | Composer | `devsecops compose` |
 | Environment table | `devsecops envs` |
 | Controls matrix | `devsecops controls` |
+| Controls JSON | `devsecops controls --format json` |
 | Architecture tree | `devsecops architecture` |
 | Explain control | `devsecops explain oidc` |
 | Optional TUI | `devsecops tui` |

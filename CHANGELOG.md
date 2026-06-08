@@ -7,6 +7,31 @@ semantic versioning.
 
 No unreleased changes.
 
+## v0.7.0 - 2026-06-08
+
+### Added
+
+* Security control catalog with `devsecops controls --format json` and
+  catalog-backed `devsecops explain <control>` mappings across CLI options,
+  Terraform, GitHub Actions, AWS, and scanners.
+* Policy preset comparison table with documented security posture for every
+  preset.
+* JSON audit evidence report through `devsecops report --format json`, written
+  to `dist/devsecops/audit-report.json` by default.
+* Security controls documentation covering strict validation, attachable audit
+  evidence, preset posture, and least-privilege role guidance.
+
+### Security
+
+* `devsecops config validate --strict` now fails on production-risk warnings
+  such as wildcard production CORS, disabled production approval gates,
+  disabled separate plan-role posture, missing HTTP validation, missing image
+  identity, and mutable image tags.
+* Terraform now validates environment bounds, non-empty CORS origins, and
+  rejects wildcard production CORS in `environment_config`.
+* Regression tests now assert generated workflow gates and Terraform variable
+  security contracts.
+
 ## v0.6.1 - 2026-06-07
 
 ### Added

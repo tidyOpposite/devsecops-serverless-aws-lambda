@@ -11,6 +11,11 @@ variable "api_throttling_rate_limit" {
 variable "cors_allowed_origins" {
   description = "Allowed CORS origins."
   type        = list(string)
+
+  validation {
+    condition     = length(var.cors_allowed_origins) > 0 && alltrue([for origin in var.cors_allowed_origins : length(trimspace(origin)) > 0])
+    error_message = "cors_allowed_origins must contain at least one non-empty origin."
+  }
 }
 
 variable "kms_key_arn" {

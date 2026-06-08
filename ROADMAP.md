@@ -241,26 +241,27 @@ Acceptance criteria:
 ## Milestone 6: Security And Policy Maturity
 
 Target release: `v0.7.0`.
+Status: implemented in `v0.7.0`.
 
 Problem: security controls should be visible as product features, not just
 Terraform or workflow details.
 
 Deliverables:
 
-* Control catalog that maps CLI options to Terraform, GitHub, AWS, and scanner
+* [x] Control catalog that maps CLI options to Terraform, GitHub, AWS, and scanner
   behavior.
-* Policy preset comparison table.
-* Strict validation for production-risky values such as wildcard CORS,
+* [x] Policy preset comparison table.
+* [x] Strict validation for production-risky values such as wildcard CORS,
   disabled approval gates, mutable image tags, and missing validation.
-* Optional machine-readable report for audit evidence.
-* Clear least-privilege guidance for deploy and plan roles.
-* Security regression tests for generated workflows and Terraform variables.
+* [x] Optional machine-readable report for audit evidence.
+* [x] Clear least-privilege guidance for deploy and plan roles.
+* [x] Security regression tests for generated workflows and Terraform variables.
 
 Acceptance criteria:
 
-* Each preset has a documented security posture.
-* `devsecops explain <control>` maps a control to concrete generated behavior.
-* Audit output can be attached to a pull request or release record.
+* [x] Each preset has a documented security posture.
+* [x] `devsecops explain <control>` maps a control to concrete generated behavior.
+* [x] Audit output can be attached to a pull request or release record.
 
 ## Milestone 7: Distribution And Adoption Readiness
 

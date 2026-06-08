@@ -60,13 +60,33 @@ variable "environment_config" {
       log_retention_days         = 365
       api_throttling_burst_limit = 100
       api_throttling_rate_limit  = 200
-      cors_allowed_origins       = ["*"]
+      cors_allowed_origins       = ["https://app.example.com"]
     }
   }
 
   validation {
     condition     = alltrue([for environment in ["dev", "staging", "prod"] : contains(keys(var.environment_config), environment)])
     error_message = "environment_config must define dev, staging, and prod."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for _, settings in var.environment_config : [
+        settings.lambda_memory_size >= 128 && settings.lambda_memory_size <= 10240,
+        settings.lambda_timeout >= 1 && settings.lambda_timeout <= 900,
+        settings.log_retention_days >= 1 && settings.log_retention_days <= 3653,
+        settings.api_throttling_burst_limit >= 1 && settings.api_throttling_burst_limit <= 5000,
+        settings.api_throttling_rate_limit >= 1 && settings.api_throttling_rate_limit <= 10000,
+        length(settings.cors_allowed_origins) > 0,
+        alltrue([for origin in settings.cors_allowed_origins : length(trimspace(origin)) > 0])
+      ]
+    ]))
+    error_message = "environment_config values must stay within Lambda/API limits and define at least one non-empty CORS origin per environment."
+  }
+
+  validation {
+    condition     = !contains(try(var.environment_config["prod"].cors_allowed_origins, []), "*")
+    error_message = "environment_config.prod.cors_allowed_origins must not contain wildcard '*'; use explicit production origins."
   }
 }
 
