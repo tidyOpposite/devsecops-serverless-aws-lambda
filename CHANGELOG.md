@@ -7,6 +7,26 @@ semantic versioning.
 
 No unreleased changes.
 
+## v0.8.0 - 2026-06-12
+
+### Added
+
+* Distribution guide with latest-release install commands, pinned release
+  install commands, upgrade commands, artifact verification, shell completion
+  setup, and compatibility matrix.
+* Release checklist covering version bump, changelog, tests, build, checksum,
+  commit, tag, push, and published-release verification steps.
+* Upgrade guide for config schema changes before future schema migrations ship.
+* `devsecops completion <bash|zsh|fish>` for dependency-free shell completion
+  generation.
+
+### Changed
+
+* GitHub Release publishing now attaches `SHA256SUMS` for wheel and source
+  distribution artifacts.
+* CLI/package CI now runs the unit, golden, E2E, build, and install smoke suite
+  across Python 3.11, 3.12, and 3.13.
+
 ## v0.7.0 - 2026-06-08
 
 ### Added

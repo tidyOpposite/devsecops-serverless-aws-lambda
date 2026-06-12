@@ -43,6 +43,7 @@ Use `devsecops menu` when you prefer the interactive path.
 | `devsecops render` | Stable | Generation | Writes CLI-owned Terraform and GitHub helper artifacts. Use `--dry-run` to preview file changes. |
 | `devsecops report` | Stable | Reporting | Writes a CLI-owned Markdown readiness report or JSON audit evidence with `--format json`. |
 | `devsecops dashboard` | Stable | Diagnostics | Prints a one-screen readiness dashboard. |
+| `devsecops completion <shell>` | Stable | Distribution | Prints dependency-free shell completion for `bash`, `zsh`, or `fish`. |
 | `devsecops doctor` | Stable | Diagnostics | Primary diagnostics group for local, GitHub, AWS, branch, Actions, and all-in-one checks. |
 | `devsecops doctor local` | Stable | Diagnostics | Checks local readiness. `--deep` adds external Terraform/AWS checks and may vary by installed tools. |
 | `devsecops doctor github` | Stable | GitHub | Checks GitHub CLI, repository variables, and repository secrets. |
@@ -103,6 +104,7 @@ Use `devsecops menu` when you prefer the interactive path.
 | --- | --- |
 | Interactive menu | `devsecops menu` |
 | Dashboard | `devsecops dashboard --mode compact` |
+| Shell completion | `devsecops completion bash` |
 | Clean config | `devsecops config new --preset balanced` |
 | Show config | `devsecops config show --format json` |
 | Validate config | `devsecops config validate` |

@@ -32,6 +32,12 @@ jobs:
           python -m pip install --upgrade build setuptools wheel
           python -m build
 
+      - name: Generate release checksums
+        run: |
+          cd dist
+          sha256sum *.whl *.tar.gz > SHA256SUMS
+          sha256sum -c SHA256SUMS
+
       - name: Resolve release notes
         id: notes
         run: |
@@ -48,5 +54,6 @@ jobs:
           files: |
             dist/*.whl
             dist/*.tar.gz
+            dist/SHA256SUMS
           draft: false
           prerelease: false

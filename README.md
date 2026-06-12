@@ -123,14 +123,39 @@ docs/                               CLI-first security, scanner, cost, and troub
 
 ## Quick Start
 
-Start with the CLI:
+Install the latest published release with Python 3.11+ and `pipx`:
 
 ```bash
-python3 -m pip install --user pipx
-python3 -m pipx ensurepath
-pipx install .
+PYTHON="${PYTHON:-python3.11}"
+
+"${PYTHON}" -m pip install --user pipx
+"${PYTHON}" -m pipx ensurepath
+export PATH="$HOME/.local/bin:$PATH"
+
+WHEEL_URL="$(
+  "${PYTHON}" - <<'PY'
+import json
+import urllib.request
+
+repo = "tidyOpposite/devsecops-serverless-aws-lambda"
+with urllib.request.urlopen(f"https://api.github.com/repos/{repo}/releases/latest") as response:
+    release = json.load(response)
+
+for asset in release["assets"]:
+    if asset["name"].endswith("-py3-none-any.whl"):
+        print(asset["browser_download_url"])
+        break
+else:
+    raise SystemExit("No wheel asset found on the latest release.")
+PY
+)"
+
+"${PYTHON}" -m pipx install --python "${PYTHON}" "devsecops-pipeline-cli @ ${WHEEL_URL}"
 devsecops menu
 ```
+
+See [Distribution and compatibility](docs/distribution.md) for pinned install,
+upgrade, shell completion, checksum verification, and supported tool versions.
 
 The main menu uses section-style navigation: selecting an item clears the
 terminal, opens that section, and returns to the main menu when you press
@@ -222,6 +247,7 @@ devsecops snapshot restore --last --dry-run
 
 devsecops envs          # environment settings table
 devsecops controls      # security controls matrix
+devsecops completion bash # print shell completion for bash, zsh, or fish
 devsecops render        # writes ignored Terraform/GitHub helper artifacts
 devsecops render --dry-run
 devsecops report        # exports Markdown readiness report
@@ -241,9 +267,11 @@ auto-refreshes every `--interval` seconds.
 The core CLI remains dependency-free. To try the optional Rich/Textual UI:
 
 ```bash
-pipx install ".[tui]"
+python3.11 -m pipx inject devsecops-pipeline-cli "rich>=13.7" "textual>=0.79"
 devsecops tui
 ```
+
+From a local checkout, `pipx install ".[tui]"` also works.
 
 The clean configuration workflow writes `.devsecops-pipeline.toml`, which is
 intentionally ignored by Git and includes `schema_version = 1`.
@@ -452,7 +480,7 @@ and [Security controls and policy presets](docs/security-controls.md).
 | Push to `main` | n/a | none | No workflow run. Maintainer pushes do not consume Actions minutes. |
 | Manual `workflow_dispatch`, `mode=plan` | selected `dev/staging/prod` | `plan` only | No apply. |
 | Manual `workflow_dispatch`, `mode=deploy`, `environment=prod`, branch `main` | `prod` | `apply` | Scan configured image when enabled, deploy Lambda, optionally validate HTTP and DAST, rollback on failure. |
-| Push tag `v*.*.*` | n/a | n/a | Publish GitHub Release from `docs/release-<tag>.md` or `CHANGELOG.md`. |
+| Push tag `v*.*.*` | n/a | n/a | Publish GitHub Release from `docs/release-<tag>.md` or `CHANGELOG.md` with wheel, source distribution, and `SHA256SUMS`. |
 
 ## Deployment Flow
 
@@ -540,7 +568,11 @@ devsecops health
 * [Separate example workload template](docs/example-workload-template.md)
 * [Operational runbooks](docs/runbooks/README.md)
 * [AWS OIDC and IAM policy guidance](AWS_policy.md)
+* [Distribution and compatibility](docs/distribution.md)
+* [Release checklist](docs/release-checklist.md)
+* [Upgrade guide](docs/upgrade-guide.md)
 * [Changelog](CHANGELOG.md)
+* [v0.8.0 release notes](docs/release-v0.8.0.md)
 * [v0.7.0 release notes](docs/release-v0.7.0.md)
 * [v0.6.1 release notes](docs/release-v0.6.1.md)
 * [v0.6.0 release notes](docs/release-v0.6.0.md)

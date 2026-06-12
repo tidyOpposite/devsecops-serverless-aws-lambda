@@ -266,6 +266,7 @@ Acceptance criteria:
 ## Milestone 7: Distribution And Adoption Readiness
 
 Target release: `v0.8.0`.
+Status: implemented in `v0.8.0`.
 
 Problem: users should be able to install, upgrade, and trust releases without
 reading the source tree.

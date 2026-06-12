@@ -55,7 +55,7 @@ def project_version(path: Path) -> str:
 
 class DevSecOpsCliTests(unittest.TestCase):
     def test_version_metadata_is_consistent(self) -> None:
-        self.assertEqual(cli.VERSION, "0.7.0")
+        self.assertEqual(cli.VERSION, "0.8.0")
         self.assertEqual(package.VERSION, cli.VERSION)
         self.assertEqual(package.__version__, cli.VERSION)
         self.assertEqual(project_version(ROOT_DIR / "pyproject.toml"), cli.VERSION)
@@ -340,7 +340,7 @@ class DevSecOpsCliTests(unittest.TestCase):
     def test_top_level_help_is_grouped_and_legacy_aliases_are_not_primary_choices(self) -> None:
         help_text = cli.build_parser().format_help()
         self.assertIn(
-            "{menu,config,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain}",
+            "{menu,config,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,completion}",
             help_text,
         )
         self.assertIn("Legacy aliases still work", help_text)
@@ -348,6 +348,25 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertNotIn("==SUPPRESS==", help_text)
         self.assertNotIn("gh-doctor           ", help_text)
         self.assertNotIn("aws-doctor          ", help_text)
+
+    def test_completion_scripts_cover_common_shells(self) -> None:
+        bash = cli.completion_script("bash")
+        zsh = cli.completion_script("zsh")
+        fish = cli.completion_script("fish")
+
+        self.assertIn("complete -F _devsecops_completion devsecops", bash)
+        self.assertIn("config dry-run preflight", bash)
+        self.assertIn("show new validate diff reset set create schema", bash)
+        self.assertIn("#compdef devsecops", zsh)
+        self.assertIn("compadd 'menu' 'config'", zsh)
+        self.assertIn("complete -c devsecops", fish)
+        self.assertIn("completion", fish)
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            result = cli.main(["completion", "bash"])
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertIn("bash completion for devsecops", buffer.getvalue())
 
     def test_readiness_json_output_contains_checks_and_gaps(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -871,6 +890,9 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("zaproxy/action-baseline", deploy_workflow)
         self.assertIn("id-token: write", deploy_workflow)
         self.assertIn("pull-requests: write", deploy_workflow)
+        self.assertIn("sha256sum *.whl *.tar.gz > SHA256SUMS", release_workflow)
+        self.assertIn("sha256sum -c SHA256SUMS", release_workflow)
+        self.assertIn("dist/SHA256SUMS", release_workflow)
 
         for workflow in [deploy_workflow, ci_workflow, release_workflow]:
             self.assertIn("persist-credentials: false", workflow)

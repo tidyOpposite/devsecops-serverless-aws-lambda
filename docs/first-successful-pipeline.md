@@ -6,10 +6,12 @@ Actions, AWS, and scanners stay visible execution layers.
 
 ## 1. Install And Run A No-Credentials Dry Run
 
-The dry run does not write files and does not require AWS credentials.
+Install the latest published CLI release with the commands in
+[Distribution and compatibility](distribution.md), then run a dry run. The dry
+run does not write files and does not require AWS credentials.
 
 ```bash
-pipx install .
+devsecops --version
 devsecops dry-run \
   --preset balanced \
   --image-uri 123456789012.dkr.ecr.us-east-1.amazonaws.com/devsecops-pipeline-prod-lambda-repo:sha-abc123

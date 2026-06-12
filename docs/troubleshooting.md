@@ -28,8 +28,9 @@ groups readiness into Local, Terraform, GitHub, AWS, Security, and Deployment
 scores.
 
 `devsecops tui` uses optional Rich/Textual dependencies. Without them, it falls
-back to the compact dashboard. Install the extra with `pipx install ".[tui]"`
-or `python3 -m pip install -e ".[tui]"`.
+back to the compact dashboard. For a published install, add the dependencies
+with `python3.11 -m pipx inject devsecops-pipeline-cli "rich>=13.7" "textual>=0.79"`.
+For development from a local checkout, use `python3 -m pip install -e ".[tui]"`.
 
 Generate a shareable report:
 
@@ -43,14 +44,16 @@ The report is written to `dist/devsecops/readiness-report.md`.
 
 ### `devsecops` command is not found
 
-Install the root package with `pipx`:
+Install the latest published CLI release with the commands in
+[Distribution and compatibility](distribution.md), then confirm the console
+command is available:
 
 ```bash
-pipx install .
+devsecops --version
 devsecops menu
 ```
 
-For development, install it in editable mode:
+For development from a local checkout, install it in editable mode:
 
 ```bash
 python3 -m pip install -e .
