@@ -295,7 +295,7 @@ jobs:
 
       - name: Run DAST scan with OWASP ZAP
         if: env.ENABLE_DAST == 'true'
-        uses: zaproxy/action-baseline@v0.14.0
+        uses: zaproxy/action-baseline@v0.15.0
         with:
           target: ${{ steps.deployment-outputs.outputs.api_gateway_invoke_url }}
           fail_action: true
