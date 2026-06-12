@@ -133,7 +133,7 @@ jobs:
           terraform -chdir="${TF_WORKING_DIR}" show -no-color tfplan > "${TF_WORKING_DIR}/tfplan.txt"
 
       - name: Upload Terraform plan artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: terraform-plan-${{ env.DEPLOY_ENVIRONMENT }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
