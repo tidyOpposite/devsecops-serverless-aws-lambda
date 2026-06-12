@@ -141,7 +141,7 @@ jobs:
 
       - name: Comment Terraform plan on PR
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           PLAN_PATH: ${{ env.TF_WORKING_DIR }}/tfplan.txt
           PLAN_ENVIRONMENT: ${{ env.DEPLOY_ENVIRONMENT }}
