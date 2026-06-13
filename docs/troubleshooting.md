@@ -9,6 +9,8 @@ behind the CLI.
 Run:
 
 ```bash
+devsecops next
+devsecops start --preset balanced
 devsecops dashboard --mode compact
 devsecops dashboard --watch --interval 10
 devsecops tui
@@ -30,7 +32,8 @@ scores.
 `devsecops tui` uses optional Rich/Textual dependencies. Without them, it falls
 back to the compact dashboard. For a published install, add the dependencies
 with `python3.11 -m pipx inject devsecops-pipeline-cli "rich>=13.7" "textual>=0.79"`.
-For development from a local checkout, use `python3 -m pip install -e ".[tui]"`.
+For development from a local checkout, use
+`PYTHON="${PYTHON:-python3.11}"` and `"${PYTHON}" -m pip install -e ".[tui]"`.
 
 Generate a shareable report:
 
@@ -56,14 +59,16 @@ devsecops menu
 For development from a local checkout, install it in editable mode:
 
 ```bash
-python3 -m pip install -e .
+PYTHON="${PYTHON:-python3.11}"
+"${PYTHON}" -m pip install -e .
 devsecops menu
 ```
 
 Without installing, run the package module from the repository:
 
 ```bash
-PYTHONPATH=cli python3 -m devsecops_cli menu
+PYTHON="${PYTHON:-python3.11}"
+PYTHONPATH=cli "${PYTHON}" -m devsecops_cli menu
 ```
 
 ### I entered a menu section by mistake

@@ -49,17 +49,38 @@ def rendered_artifact_contents(root: Path) -> dict[str, str]:
     return {str(path): (root / path).read_text(encoding="utf-8") for path in RENDERED_ARTIFACTS}
 
 
+def create_required_project_files(root: Path) -> None:
+    for relative in cli.REQUIRED_PROJECT_FILES:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# test project file\n", encoding="utf-8")
+
+
 def project_version(path: Path) -> str:
     return tomllib.loads(path.read_text(encoding="utf-8"))["project"]["version"]
 
 
+def project_requires_python(path: Path) -> str:
+    return tomllib.loads(path.read_text(encoding="utf-8"))["project"]["requires-python"]
+
+
 class DevSecOpsCliTests(unittest.TestCase):
     def test_version_metadata_is_consistent(self) -> None:
-        self.assertEqual(cli.VERSION, "0.10.0")
+        self.assertEqual(cli.VERSION, "0.11.0")
         self.assertEqual(package.VERSION, cli.VERSION)
         self.assertEqual(package.__version__, cli.VERSION)
         self.assertEqual(project_version(ROOT_DIR / "pyproject.toml"), cli.VERSION)
         self.assertEqual(project_version(ROOT_DIR / "cli/pyproject.toml"), cli.VERSION)
+
+    def test_python_support_metadata_matches_compatibility_matrix(self) -> None:
+        distribution_doc = (ROOT_DIR / "docs/distribution.md").read_text(encoding="utf-8")
+        readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+
+        self.assertEqual(project_requires_python(ROOT_DIR / "pyproject.toml"), ">=3.11,<3.14")
+        self.assertEqual(project_requires_python(ROOT_DIR / "cli/pyproject.toml"), ">=3.11,<3.14")
+        self.assertIn("| Python | 3.11, 3.12, and 3.13 |", distribution_doc)
+        self.assertIn('requires-python = ">=3.11,<3.14"', distribution_doc)
+        self.assertIn("Python 3.11, 3.12, or 3.13", readme)
 
     def test_module_execution_does_not_emit_runtime_warning(self) -> None:
         env = os.environ.copy()
@@ -426,6 +447,48 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("Milestone 9: Stability Contract And Migration Readiness", roadmap)
         self.assertIn("Status: implemented in `v0.10.0`.", roadmap)
 
+    def test_release_candidate_docs_cover_milestone_ten_contract(self) -> None:
+        rc_doc = (ROOT_DIR / "docs/v1.0.0-release-candidate-checklist.md").read_text(encoding="utf-8")
+        limitations_doc = (ROOT_DIR / "docs/known-limitations.md").read_text(encoding="utf-8")
+        release_checklist = (ROOT_DIR / "docs/release-checklist.md").read_text(encoding="utf-8")
+        readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+        command_inventory = (ROOT_DIR / "docs/command-inventory.md").read_text(encoding="utf-8")
+        roadmap = (ROOT_DIR / "ROADMAP.md").read_text(encoding="utf-8")
+
+        for criterion in [
+            "CLI command groups and core flags are stable.",
+            "Config schema versioning and migration behavior are implemented.",
+            "Clean config generation, validation, rendering, and readiness are covered by end-to-end tests.",
+            "Generated Terraform and GitHub artifacts are deterministic and documented.",
+            "At least one full AWS/GitHub production deployment walkthrough is documented.",
+            "Local rollback cannot overwrite files outside the CLI-owned file set.",
+            "Security controls have documented behavior and regression tests.",
+            "Release and upgrade flows are documented.",
+            "Known limitations are explicit rather than hidden in implementation details.",
+        ]:
+            self.assertIn(criterion, rc_doc)
+
+        for required in [
+            "Compatibility Verification Pass",
+            "Documentation Audit",
+            "Security Review",
+            "Version 1.0 Criteria Evidence Map",
+            "Blocker Register For v1.0.0 Stable",
+            "RC-B1",
+            "devsecops inventory --format json",
+            "devsecops report --format json",
+            "terraform -chdir=terraform validate -no-color",
+        ]:
+            self.assertIn(required, rc_doc)
+
+        self.assertIn("Accepted Limitations", limitations_doc)
+        self.assertIn("Blockers Before v1.0.0 Stable", limitations_doc)
+        self.assertIn("v1.0 Release Candidate Hardening Gate", release_checklist)
+        self.assertIn("[v1.0.0 release candidate checklist](docs/v1.0.0-release-candidate-checklist.md)", readme)
+        self.assertIn("Release candidate checklist", command_inventory)
+        self.assertIn("Status: release candidate shipped in `v0.11.0`.", roadmap)
+        self.assertIn("docs/v1.0.0-release-candidate-checklist.md", roadmap)
+
     def test_help_documents_product_contract_and_first_run(self) -> None:
         help_text = cli.build_parser().format_help()
         self.assertIn("CLI product", help_text)
@@ -434,6 +497,7 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("devsecops dry-run --image-uri <immutable-ecr-image-uri>", help_text)
         self.assertIn("devsecops config validate", help_text)
         self.assertIn("devsecops config diff", help_text)
+        self.assertIn("devsecops next", help_text)
         self.assertIn("devsecops render", help_text)
         self.assertIn("devsecops readiness", help_text)
         self.assertIn("devsecops report", help_text)
@@ -445,7 +509,7 @@ class DevSecOpsCliTests(unittest.TestCase):
     def test_top_level_help_is_grouped_and_legacy_aliases_are_not_primary_choices(self) -> None:
         help_text = cli.build_parser().format_help()
         self.assertIn(
-            "{menu,config,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,inventory,completion}",
+            "{menu,config,next,start,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,inventory,evidence,completion}",
             help_text,
         )
         self.assertIn("Legacy aliases still work", help_text)
@@ -460,12 +524,13 @@ class DevSecOpsCliTests(unittest.TestCase):
         fish = cli.completion_script("fish")
 
         self.assertIn("complete -F _devsecops_completion devsecops", bash)
-        self.assertIn("config dry-run preflight", bash)
+        self.assertIn("config next start dry-run preflight", bash)
         self.assertIn("show new validate diff reset set create schema", bash)
         self.assertIn("#compdef devsecops", zsh)
         self.assertIn("compadd 'menu' 'config'", zsh)
         self.assertIn("complete -c devsecops", fish)
         self.assertIn("inventory", bash)
+        self.assertIn("evidence", bash)
         self.assertIn("inventory", zsh)
         self.assertIn("completion", fish)
 
@@ -488,6 +553,9 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertEqual(payload["schema_version"], cli.CONTRACT_SCHEMA_VERSION)
         self.assertEqual(by_command["devsecops terraform plan"]["status"], "stable")
         self.assertEqual(by_command["devsecops terraform bootstrap"]["status"], "stable")
+        self.assertEqual(by_command["devsecops next"]["status"], "stable")
+        self.assertEqual(by_command["devsecops start"]["status"], "stable")
+        self.assertEqual(by_command["devsecops evidence collect"]["status"], "stable")
         self.assertEqual(by_command["devsecops rollback"]["alias_for"], "devsecops snapshot restore")
         self.assertEqual(by_command["devsecops compose"]["status"], "experimental")
         self.assertIn("aliases", payload["deprecation_policy"])
@@ -511,10 +579,148 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("# DevSecOps Command Inventory", markdown_buffer.getvalue())
         self.assertIn("Generated Artifact Contract", markdown_buffer.getvalue())
 
+    def test_new_ux_commands_have_help(self) -> None:
+        for command in [
+            ["next", "--help"],
+            ["start", "--help"],
+            ["evidence", "collect", "--help"],
+        ]:
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main(command)
+            self.assertEqual(raised.exception.code, 0)
+            self.assertIn("usage:", buffer.getvalue())
+
+    def test_next_action_decision_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.assertEqual(cli.next_action(root, cli.default_config())["id"], "missing_project_files")
+
+            create_required_project_files(root)
+            self.assertEqual(cli.next_action(root, cli.default_config())["id"], "missing_config")
+
+            cfg = cli.default_config()
+            cli.write_config(root, cfg)
+            self.assertEqual(cli.next_action(root, cfg)["id"], "missing_image")
+
+            cfg["lambda_image_uri"] = "123456789012.dkr.ecr.us-east-1.amazonaws.com/devsecops-pipeline-prod-lambda-repo:sha-abc123"
+            cli.write_config(root, cfg)
+            self.assertEqual(cli.next_action(root, cfg)["id"], "missing_backend")
+
+            cfg["backend"]["bucket"] = "state-bucket"
+            cfg["enable_http_validation"] = True
+            cli.write_config(root, cfg)
+            self.assertEqual(cli.next_action(root, cfg)["id"], "missing_github_setup")
+
+            (root / cli.GENERATED_TFVARS).parent.mkdir(parents=True, exist_ok=True)
+            (root / cli.GENERATED_TFVARS).write_text("project_name = \"devsecops-pipeline\"\n", encoding="utf-8")
+            setup = root / cli.DIST_DIR / "github-setup.sh"
+            setup.parent.mkdir(parents=True, exist_ok=True)
+            setup.write_text("# setup\n", encoding="utf-8")
+            with patch.object(cli, "command_exists", side_effect=lambda name: name == "gh"), patch.object(
+                cli,
+                "collect_github_checks",
+                return_value=[cli.Check("GitHub auth", "WARN", "not authenticated")],
+            ):
+                self.assertEqual(cli.next_action(root, cfg)["id"], "missing_github_setup")
+
+            with patch.object(cli, "command_exists", side_effect=lambda name: name == "gh"), patch.object(
+                cli,
+                "collect_github_checks",
+                return_value=[
+                    cli.Check("GitHub CLI", "OK", "Installed."),
+                    cli.Check("GitHub auth", "OK", "Authenticated."),
+                    cli.Check("GitHub repository", "OK", "owner/repo"),
+                ],
+            ):
+                self.assertEqual(cli.next_action(root, cfg)["id"], "missing_aws_evidence")
+
+            with patch.object(cli, "command_exists", return_value=True), patch.object(
+                cli,
+                "collect_github_checks",
+                return_value=[
+                    cli.Check("GitHub CLI", "OK", "Installed."),
+                    cli.Check("GitHub auth", "OK", "Authenticated."),
+                    cli.Check("GitHub repository", "OK", "owner/repo"),
+                ],
+            ), patch.object(
+                cli,
+                "collect_aws_checks",
+                return_value=[cli.Check("Lambda function", "WARN", "not deployed")],
+            ):
+                self.assertEqual(cli.next_action(root, cfg)["id"], "ready_for_deploy")
+
+            with patch.object(cli, "command_exists", return_value=True), patch.object(
+                cli,
+                "collect_github_checks",
+                return_value=[
+                    cli.Check("GitHub CLI", "OK", "Installed."),
+                    cli.Check("GitHub auth", "OK", "Authenticated."),
+                    cli.Check("GitHub repository", "OK", "owner/repo"),
+                ],
+            ), patch.object(
+                cli,
+                "collect_aws_checks",
+                return_value=[cli.Check("AWS identity", "OK", "ok"), cli.Check("Lambda function", "OK", "deployed")],
+            ):
+                self.assertEqual(cli.next_action(root, cfg)["id"], "ready_for_release_evidence")
+
+    def test_next_command_json_reports_context_and_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["next", "--format", "json"])
+
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertEqual(payload["kind"], "next-action")
+        self.assertEqual(payload["action"], "missing_project_files")
+        self.assertIn("context", payload)
+
+    def test_start_creates_config_with_yes_after_project_files_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            create_required_project_files(root)
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["start", "--yes"])
+
+            self.assertTrue((root / cli.CONFIG_FILE).exists())
+            self.assertIn("Guided Start", buffer.getvalue())
+            self.assertIn("Next Action", buffer.getvalue())
+
+        self.assertEqual(result, cli.EXIT_OK)
+
+    def test_evidence_collect_rc_writes_release_candidate_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.default_config())
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["evidence", "collect", "--rc"])
+
+            evidence_dir = root / cli.RC_EVIDENCE_DIR
+            manifest = json.loads((evidence_dir / "manifest.json").read_text(encoding="utf-8"))
+            inventory_exists = (evidence_dir / "inventory.json").exists()
+            readiness_exists = (evidence_dir / "readiness.json").exists()
+
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertEqual(manifest["kind"], "release-candidate-evidence")
+        self.assertTrue(inventory_exists)
+        self.assertTrue(readiness_exists)
+        self.assertIn("Release Candidate Evidence", buffer.getvalue())
+
     def test_first_success_documented_commands_are_stable(self) -> None:
         first_success_doc = (ROOT_DIR / "docs/first-successful-pipeline.md").read_text(encoding="utf-8")
         command_status = {item["command"]: item["status"] for item in cli.command_contracts()}
         required_stable_commands = [
+            "devsecops next",
+            "devsecops start",
             "devsecops config new",
             "devsecops config validate",
             "devsecops config diff",
@@ -530,6 +736,7 @@ class DevSecOpsCliTests(unittest.TestCase):
             "devsecops report",
             "devsecops github status",
             "devsecops doctor aws",
+            "devsecops evidence collect",
         ]
 
         for command in required_stable_commands:
@@ -731,6 +938,21 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertEqual(strict_result, cli.EXIT_VALIDATION_FAILED)
         self.assertTrue(any(check["name"] == "Production CORS policy" and check["status"] == "WARN" for check in strict_payload["checks"]))
         self.assertEqual(relaxed_payload["kind"], "config")
+
+    def test_config_validate_strict_human_shows_production_blockers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.default_config())
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["config", "validate", "--strict"])
+
+        output = buffer.getvalue()
+        self.assertEqual(result, cli.EXIT_VALIDATION_FAILED)
+        self.assertIn("Production Blockers", output)
+        self.assertIn("Warnings promoted to failures by --strict", output)
+        self.assertIn("Next command:", output)
 
     def test_config_validate_command_fails_before_external_tools_on_bad_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1044,6 +1266,41 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertTrue(any(check.name.endswith("AWS_PLAN_ROLE_TO_ASSUME_ARN") and check.status == "WARN" for check in checks))
         self.assertTrue(any(check.name.endswith("SNYK_TOKEN") and check.status == "WARN" for check in checks))
 
+    def test_github_setup_apply_shows_precheck_before_applying(self) -> None:
+        def fake_gh_command(root: Path, args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ["auth", "status"]:
+                return subprocess.CompletedProcess(args, 0, stdout="logged in", stderr="")
+            if args[:2] == ["repo", "view"]:
+                return subprocess.CompletedProcess(args, 0, stdout="owner/repo\n", stderr="")
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli.write_config(root, cli.default_config())
+            with patch.object(cli, "repo_root", return_value=root), patch.object(cli, "command_exists", return_value=True), patch.object(
+                cli,
+                "gh_command",
+                side_effect=fake_gh_command,
+            ), patch.object(cli, "apply_github_setup", return_value=0) as apply_setup:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(
+                        [
+                            "github",
+                            "setup",
+                            "--apply",
+                            "--deploy-role-arn",
+                            "arn:aws:iam::123456789012:role/deploy",
+                            "--plan-role-arn",
+                            "arn:aws:iam::123456789012:role/plan",
+                        ]
+                    )
+
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertIn("GitHub Setup Precheck", buffer.getvalue())
+        self.assertIn("Deploy role ARN argument", buffer.getvalue())
+        apply_setup.assert_called_once()
+
     def test_workflow_security_hardening_contract(self) -> None:
         deploy_workflow = (ROOT_DIR / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
         ci_workflow = (ROOT_DIR / ".github/workflows/ci.yml").read_text(encoding="utf-8")
@@ -1248,9 +1505,10 @@ class DevSecOpsCliTests(unittest.TestCase):
             with patch.object(cli, "command_exists", return_value=False):
                 checks = cli.collect_aws_checks(Path(tmpdir), cli.default_config(), env_name="prod")
 
+        self.assertEqual(len(checks), 1)
         self.assertEqual(checks[0].name, "AWS CLI")
         self.assertEqual(checks[0].status, "WARN")
-        self.assertTrue(any(check.name == "Lambda function" and check.status == "WARN" for check in checks))
+        self.assertIn("skipped AWS identity", checks[0].detail)
 
     def test_collect_aws_checks_warns_when_credentials_are_missing(self) -> None:
         def fake_run_command(command: list[str], root: Path, timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -1384,6 +1642,18 @@ class DevSecOpsCliTests(unittest.TestCase):
 
         self.assertIn(aws_checks[0], checks)
         collect_aws.assert_called_once()
+
+    def test_collect_checks_deep_skips_terraform_cascade_when_project_files_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(cli, "command_exists", return_value=True), patch.object(cli, "collect_aws_checks", return_value=[]):
+                checks = cli.collect_checks(root, cli.default_config(), deep=True)
+
+        by_name = {check.name: check for check in checks}
+        self.assertEqual(by_name["Project files"].status, "FAIL")
+        self.assertNotIn("Terraform validate", by_name)
+        self.assertNotIn("Bootstrap validate", by_name)
+        self.assertEqual(by_name["Terraform deep checks"].status, "INFO")
 
     def test_aws_doctor_strict_fails_on_scored_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -132,7 +132,8 @@ docs/                               CLI-first security, scanner, cost, and troub
 
 ## Quick Start
 
-Install the latest published release with Python 3.11+ and `pipx`:
+Install the latest published release with Python 3.11, 3.12, or 3.13 and
+`pipx`:
 
 ```bash
 PYTHON="${PYTHON:-python3.11}"
@@ -176,17 +177,26 @@ blocking 100% readiness and the concrete fix for each one.
 For development, install the local package in editable mode:
 
 ```bash
-python3 -m pip install -e .
+PYTHON="${PYTHON:-python3.11}"
+"${PYTHON}" -m pip install -e .
 devsecops dashboard
 ```
 
 Without installing, run the package module with `PYTHONPATH`:
 
 ```bash
-PYTHONPATH=cli python3 -m devsecops_cli dashboard
+PYTHON="${PYTHON:-python3.11}"
+PYTHONPATH=cli "${PYTHON}" -m devsecops_cli dashboard
 ```
 
 Recommended first run:
+
+```bash
+devsecops next
+devsecops start --preset balanced
+```
+
+Non-interactive first run:
 
 ```bash
 devsecops config new --preset balanced
@@ -196,6 +206,7 @@ devsecops dry-run --image-uri 123456789012.dkr.ecr.us-east-1.amazonaws.com/devse
 devsecops render
 devsecops readiness
 devsecops report
+devsecops evidence collect --rc
 ```
 
 The CLI is intentionally dependency-free for core flows, so it can run before a
@@ -257,6 +268,9 @@ devsecops snapshot restore --last --dry-run
 devsecops envs          # environment settings table
 devsecops controls      # security controls matrix
 devsecops inventory --format json # stable command/JSON/artifact contract
+devsecops next          # show the single next setup action for this repo
+devsecops start --preset balanced # guided safe onboarding flow
+devsecops evidence collect --rc # collect local release-candidate evidence
 devsecops completion bash # print shell completion for bash, zsh, or fish
 devsecops render        # writes ignored Terraform/GitHub helper artifacts
 devsecops render --dry-run
@@ -585,6 +599,7 @@ devsecops health
 * [Generated artifacts](docs/generated-artifacts.md)
 * [First successful pipeline](docs/first-successful-pipeline.md)
 * [Production deployment evidence](docs/production-deployment-evidence.md)
+* [v1.0.0 release candidate checklist](docs/v1.0.0-release-candidate-checklist.md)
 * [Bring your own Lambda image](docs/bring-your-own-image.md)
 * [Separate example workload template](docs/example-workload-template.md)
 * [Operational runbooks](docs/runbooks/README.md)
@@ -592,7 +607,9 @@ devsecops health
 * [Distribution and compatibility](docs/distribution.md)
 * [Release checklist](docs/release-checklist.md)
 * [Upgrade guide](docs/upgrade-guide.md)
+* [Known limitations](docs/known-limitations.md)
 * [Changelog](CHANGELOG.md)
+* [v0.11.0 release notes](docs/release-v0.11.0.md)
 * [v0.10.0 release notes](docs/release-v0.10.0.md)
 * [v0.8.0 release notes](docs/release-v0.8.0.md)
 * [v0.7.0 release notes](docs/release-v0.7.0.md)
@@ -607,6 +624,9 @@ devsecops health
 
 ## Current Limitations
 
+The full accepted-limitations and stable-release blocker register is tracked in
+[Known limitations](docs/known-limitations.md).
+
 * Application source, dependency scanning, and image build logic are expected to
   live in the workload repository or an upstream release workflow.
 * The CLI is the product surface, but Terraform and GitHub Actions remain the
@@ -617,3 +637,6 @@ devsecops health
   workloads.
 * Optional DAST is a passive baseline scan only. Authenticated flows and
   business-logic checks need workload-specific tests.
+* Before `v1.0.0`, the release record still needs a real AWS/GitHub production
+  walkthrough evidence bundle plus final GitHub CLI, AWS CLI, and WSL2
+  compatibility transcripts.

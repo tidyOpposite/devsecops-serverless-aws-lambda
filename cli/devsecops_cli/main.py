@@ -31,7 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback guard
     tomllib = None  # type: ignore[assignment]
 
 
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 CONFIG_SCHEMA_VERSION = 1
 CONFIG_FILE = ".devsecops-pipeline.toml"
 EXIT_OK = 0
@@ -43,6 +43,12 @@ EXIT_INTERRUPTED = 130
 DIST_DIR = Path("dist/devsecops")
 GENERATED_TFVARS = Path("terraform/generated.auto.tfvars")
 AUDIT_REPORT = DIST_DIR / "audit-report.json"
+RC_EVIDENCE_DIR = DIST_DIR / "evidence/rc"
+REQUIRED_PROJECT_FILES = [
+    "terraform/main.tf",
+    "terraform/modules/lambda/main.tf",
+    ".github/workflows/deploy.yml",
+]
 SNAPSHOT_DIR = Path(".devsecops/snapshots")
 SNAPSHOT_FILES = [
     Path(CONFIG_FILE),
@@ -151,6 +157,8 @@ COMPLETION_SHELLS = ("bash", "zsh", "fish")
 COMPLETION_COMMANDS = [
     "menu",
     "config",
+    "next",
+    "start",
     "dry-run",
     "preflight",
     "health",
@@ -165,6 +173,7 @@ COMPLETION_COMMANDS = [
     "dashboard",
     "explain",
     "inventory",
+    "evidence",
     "completion",
 ]
 COMPLETION_SUBCOMMANDS = {
@@ -174,6 +183,7 @@ COMPLETION_SUBCOMMANDS = {
     "github": ["setup", "doctor", "status", "branch"],
     "terraform": ["plan", "bootstrap"],
     "snapshot": ["list", "show", "restore"],
+    "evidence": ["collect"],
     "preset": ["list", "show", "apply"],
     "completion": list(COMPLETION_SHELLS),
 }
@@ -189,6 +199,8 @@ COMPLETION_OPTIONS = {
     "config set": ["--help", "--render"],
     "config create": ["--help", "--preset", "--force", "--render"],
     "config schema": ["--help", "--format"],
+    "next": ["--help", "--format"],
+    "start": ["--help", "--preset", "--render", "--yes"],
     "doctor": ["--help", "--deep", "--strict", "--format"],
     "doctor local": ["--help", "--deep", "--strict", "--format"],
     "doctor github": ["--help", "--strict", "--format"],
@@ -218,6 +230,8 @@ COMPLETION_OPTIONS = {
     "snapshot restore": ["--help", "--to", "--last", "--dry-run", "--yes"],
     "readiness": ["--help", "--deep", "--strict", "--format"],
     "inventory": ["--help", "--format", "--status"],
+    "evidence": ["--help"],
+    "evidence collect": ["--help", "--rc", "--output"],
     "completion": ["--help", "--program"],
 }
 CONTRACT_SCHEMA_VERSION = 1
@@ -229,6 +243,23 @@ COMMAND_CONTRACTS: list[dict[str, Any]] = [
         "stable_flags": [],
         "formats": ["human"],
         "notes": "Default command when no subcommand is passed.",
+    },
+    {
+        "command": "devsecops next",
+        "status": "stable",
+        "scope": "first-success",
+        "stable_flags": ["--format"],
+        "formats": ["human", "json"],
+        "json_kind": "next-action",
+        "notes": "Shows the single next action for the current project context.",
+    },
+    {
+        "command": "devsecops start",
+        "status": "stable",
+        "scope": "first-success",
+        "stable_flags": ["--preset", "--render", "--yes"],
+        "formats": ["human"],
+        "notes": "Guided safe onboarding flow that creates config only after confirmation.",
     },
     {
         "command": "devsecops config show",
@@ -338,6 +369,15 @@ COMMAND_CONTRACTS: list[dict[str, Any]] = [
         "formats": ["markdown", "json"],
         "json_kind": "audit-evidence",
         "notes": "Writes CLI-owned readiness report or attachable audit evidence.",
+    },
+    {
+        "command": "devsecops evidence collect",
+        "status": "stable",
+        "scope": "reports",
+        "stable_flags": ["--rc", "--output"],
+        "formats": ["generated-files", "human"],
+        "json_kind": "release-candidate-evidence",
+        "notes": "Collects local release-candidate evidence artifacts under dist/devsecops.",
     },
     {
         "command": "devsecops dashboard",
@@ -781,6 +821,16 @@ JSON_OUTPUT_CONTRACTS = [
         "commands": ["devsecops inventory --format json"],
         "stable_keys": ["kind", "schema_version", "commands", "deprecation_policy", "json_outputs", "generated_artifacts"],
     },
+    {
+        "kind": "next-action",
+        "commands": ["devsecops next --format json"],
+        "stable_keys": ["kind", "schema_version", "context", "action", "command", "detail", "docs"],
+    },
+    {
+        "kind": "release-candidate-evidence",
+        "commands": ["devsecops evidence collect --rc"],
+        "stable_keys": ["kind", "schema_version", "generated_at", "output_dir", "files", "terraform_validate"],
+    },
 ]
 GENERATED_ARTIFACT_CONTRACTS = [
     {
@@ -831,6 +881,13 @@ GENERATED_ARTIFACT_CONTRACTS = [
         "compatibility": "stable-json",
         "rerender_required_when": ["audit evidence, readiness, config, or control state changes"],
         "expected_diffs": ["generated_at timestamp", "readiness/config/control payload changes"],
+    },
+    {
+        "path": str(RC_EVIDENCE_DIR / "manifest.json"),
+        "producer": "devsecops evidence collect --rc",
+        "compatibility": "stable-json",
+        "rerender_required_when": ["release-candidate evidence is collected"],
+        "expected_diffs": ["generated_at timestamp", "evidence file list", "Terraform validation status"],
     },
 ]
 CONFIG_MIGRATION_CONTRACT = {
@@ -2571,16 +2628,11 @@ def collect_aws_checks(root: Path, cfg: dict[str, Any], env_name: str = "prod") 
 
     if not command_exists("aws"):
         return [
-            Check("AWS CLI", "WARN", "`aws` not found on PATH."),
-            Check("AWS identity", "WARN", "Cannot inspect AWS without AWS CLI."),
-            Check("State bucket", "WARN", "Cannot inspect backend bucket without AWS CLI."),
-            Check("Lock table", "WARN", "Cannot inspect DynamoDB lock table without AWS CLI."),
-            Check("ECR repository", "WARN", "Cannot inspect ECR repository without AWS CLI."),
-            Check("Lambda execution role", "WARN", "Cannot inspect IAM role without AWS CLI."),
-            Check("Lambda function", "WARN", "Cannot inspect Lambda function without AWS CLI."),
-            Check("API Gateway", "WARN", "Cannot inspect API Gateway without AWS CLI."),
-            Check("CloudWatch log group", "WARN", "Cannot inspect log group without AWS CLI."),
-            Check("Configured ECR image", "WARN", "Cannot inspect configured image without AWS CLI."),
+            Check(
+                "AWS CLI",
+                "WARN",
+                "`aws` not found on PATH; skipped AWS identity, backend, ECR, Lambda, API Gateway, CloudWatch, and image checks.",
+            ),
         ]
 
     checks.append(Check("AWS CLI", "OK", "Installed."))
@@ -3111,6 +3163,49 @@ def apply_github_setup(root: Path, cfg: dict[str, Any], args: argparse.Namespace
     return 0
 
 
+def github_setup_precheck(root: Path, cfg: dict[str, Any], args: argparse.Namespace) -> list[Check]:
+    checks: list[Check] = []
+    gh_available = command_exists("gh")
+    checks.append(Check("GitHub CLI", "OK" if gh_available else "WARN", "Installed." if gh_available else "`gh` not found on PATH."))
+    if gh_available:
+        auth = gh_command(root, ["auth", "status"])
+        checks.append(Check("GitHub auth", "OK" if auth.returncode == 0 else "WARN", "Authenticated." if auth.returncode == 0 else compact_error(auth)))
+        if auth.returncode == 0:
+            repo = gh_command(root, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+            checks.append(
+                Check(
+                    "GitHub repository",
+                    "OK" if repo.returncode == 0 and repo.stdout.strip() else "WARN",
+                    repo.stdout.strip() if repo.returncode == 0 and repo.stdout.strip() else compact_error(repo),
+                )
+            )
+    checks.append(
+        Check(
+            "Deploy role ARN argument",
+            "OK" if bool(getattr(args, "deploy_role_arn", None)) else "WARN",
+            "Provided." if getattr(args, "deploy_role_arn", None) else "Pass --deploy-role-arn to set AWS_ROLE_TO_ASSUME_ARN.",
+        )
+    )
+    checks.append(
+        Check(
+            "Plan role ARN argument",
+            "OK" if bool(getattr(args, "plan_role_arn", None)) else "WARN",
+            "Provided." if getattr(args, "plan_role_arn", None) else "Pass --plan-role-arn to set AWS_PLAN_ROLE_TO_ASSUME_ARN.",
+        )
+    )
+    if cfg["enable_snyk_scan"]:
+        checks.append(
+            Check(
+                "Snyk token argument",
+                "OK" if bool(getattr(args, "snyk_token", None)) else "WARN",
+                "Provided." if getattr(args, "snyk_token", None) else "SNYK_TOKEN is required because enable_snyk_scan is true.",
+            )
+        )
+    else:
+        checks.append(Check("Snyk token argument", "INFO", "Optional because enable_snyk_scan is false.", scored=False))
+    return checks
+
+
 def is_immutable_image(image_uri: str) -> bool:
     if not image_uri:
         return False
@@ -3218,12 +3313,7 @@ def collect_checks(root: Path, cfg: dict[str, Any], deep: bool = False) -> list[
         )
     )
 
-    required_files = [
-        "terraform/main.tf",
-        "terraform/modules/lambda/main.tf",
-        ".github/workflows/deploy.yml",
-    ]
-    missing = [path for path in required_files if not (root / path).exists()]
+    missing = [path for path in REQUIRED_PROJECT_FILES if not (root / path).exists()]
     checks.append(
         Check(
             "Project files",
@@ -3232,7 +3322,10 @@ def collect_checks(root: Path, cfg: dict[str, Any], deep: bool = False) -> list[
         )
     )
 
-    for command, required in [("git", False), ("terraform", True), ("aws", False)]:
+    tool_checks = [("git", False), ("terraform", True)]
+    if not deep:
+        tool_checks.append(("aws", False))
+    for command, required in tool_checks:
         exists = command_exists(command)
         checks.append(
             Check(
@@ -3364,7 +3457,7 @@ def collect_checks(root: Path, cfg: dict[str, Any], deep: bool = False) -> list[
             )
         )
 
-    if deep and command_exists("terraform"):
+    if deep and command_exists("terraform") and not missing:
         root_validate = run_command(["terraform", "-chdir=terraform", "validate", "-no-color"], root)
         checks.append(
             Check(
@@ -3386,11 +3479,188 @@ def collect_checks(root: Path, cfg: dict[str, Any], deep: bool = False) -> list[
                 else compact_error(bootstrap_validate),
             )
         )
+    elif deep and missing:
+        checks.append(
+            Check(
+                "Terraform deep checks",
+                "INFO",
+                "Skipped because required project files are missing.",
+                scored=False,
+            )
+        )
 
     if deep:
         checks.extend(collect_aws_checks(root, cfg, env_name="prod"))
 
     return checks
+
+
+def missing_project_files(root: Path) -> list[str]:
+    return [path for path in REQUIRED_PROJECT_FILES if not (root / path).exists()]
+
+
+def project_context(root: Path, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = cfg or load_config(root)
+    config_exists = config_path(root).exists()
+    missing_files = missing_project_files(root)
+    generated_tfvars = (root / GENERATED_TFVARS).exists()
+    generated_setup = (root / DIST_DIR / "github-setup.sh").exists()
+    has_any_project_signal = config_exists or any((root / path).exists() for path in REQUIRED_PROJECT_FILES) or generated_tfvars or generated_setup
+
+    if not has_any_project_signal and not any(root.iterdir()):
+        stage = "empty_directory"
+    elif missing_files:
+        stage = "installed_cli_not_project_repo" if not has_any_project_signal else "incomplete_project_repo"
+    elif not config_exists:
+        stage = "project_repo_without_config"
+    elif generated_tfvars and generated_setup:
+        validation_gaps = [check for check in validate_config(cfg) if check.status in {"WARN", "FAIL"}]
+        stage = "production_candidate" if not validation_gaps and not cfg["backend"]["bucket"].startswith("replace-with") else "rendered_project"
+    else:
+        stage = "configured_project"
+
+    return {
+        "stage": stage,
+        "config_exists": config_exists,
+        "missing_project_files": missing_files,
+        "generated_tfvars": generated_tfvars,
+        "generated_github_setup": generated_setup,
+    }
+
+
+def next_action(root: Path, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = cfg or load_config(root)
+    context = project_context(root, cfg)
+    validation_checks = validate_config(cfg)
+    validation_failures = [check for check in validation_checks if check.status == "FAIL"]
+    validation_policy_gaps = [
+        check
+        for check in validation_checks
+        if check.name
+        in {
+            "Lambda image immutability policy",
+            "Production CORS policy",
+            "Production approval gate policy",
+            "Separate plan role policy",
+            "Deployment validation policy",
+        }
+        and check.status in {"WARN", "FAIL"}
+    ]
+
+    if context["missing_project_files"]:
+        return {
+            "id": "missing_project_files",
+            "title": "Missing project files",
+            "detail": "Run this command inside the DevSecOps pipeline repo/template or copy the required Terraform and GitHub workflow files.",
+            "command": "Use the DevSecOps pipeline repository/template, then rerun `devsecops next`.",
+            "docs": "docs/troubleshooting.md#project-files-are-missing",
+            "context": context,
+        }
+    if not context["config_exists"]:
+        return {
+            "id": "missing_config",
+            "title": "Create local source config",
+            "detail": f"{CONFIG_FILE} is missing.",
+            "command": "devsecops config new --preset balanced",
+            "docs": "docs/first-successful-pipeline.md",
+            "context": context,
+        }
+    if validation_failures:
+        return {
+            "id": "missing_config",
+            "title": "Fix invalid config",
+            "detail": f"{len(validation_failures)} invalid config setting(s) block the pipeline.",
+            "command": "devsecops config validate",
+            "docs": "docs/troubleshooting.md#config-validation-fails",
+            "context": context,
+        }
+    image_uri = str(cfg.get("lambda_image_uri", ""))
+    if not image_uri or not is_immutable_image(image_uri):
+        return {
+            "id": "missing_image",
+            "title": "Set immutable Lambda image",
+            "detail": "Production deploy requires an immutable Lambda container image URI.",
+            "command": "devsecops preflight --image-uri <immutable-ecr-image-uri> && devsecops config set lambda_image_uri <immutable-ecr-image-uri> --render",
+            "docs": "docs/bring-your-own-image.md",
+            "context": context,
+        }
+    backend_bucket = str(cfg["backend"]["bucket"])
+    if not backend_bucket or backend_bucket.startswith("replace-with"):
+        return {
+            "id": "missing_backend",
+            "title": "Configure Terraform backend",
+            "detail": "Set a real S3 backend bucket before GitHub/AWS production setup.",
+            "command": "devsecops config set backend.bucket <state-bucket> --render",
+            "docs": "docs/first-successful-pipeline.md#4-configure-terraform-backend",
+            "context": context,
+        }
+    if validation_policy_gaps:
+        return {
+            "id": "missing_config",
+            "title": "Close production policy gaps",
+            "detail": f"{len(validation_policy_gaps)} production policy gap(s) remain.",
+            "command": "devsecops config validate --strict",
+            "docs": "docs/troubleshooting.md#config-validation-fails",
+            "context": context,
+        }
+    if not context["generated_tfvars"] or not context["generated_github_setup"]:
+        return {
+            "id": "missing_github_setup",
+            "title": "Prepare GitHub setup",
+            "detail": "Render helper artifacts before configuring repository variables/secrets with GitHub CLI.",
+            "command": "devsecops render && devsecops github setup --write",
+            "docs": "docs/first-successful-pipeline.md#5-configure-github-repository-settings",
+            "context": context,
+        }
+    github_checks = collect_github_checks(root, cfg)
+    github_gaps = [check for check in github_checks if check.scored and check.status != "OK"]
+    if github_gaps:
+        return {
+            "id": "missing_github_setup",
+            "title": "Complete GitHub setup",
+            "detail": f"{len(github_gaps)} GitHub setup check(s) still need attention.",
+            "command": "devsecops doctor github --strict && devsecops github setup --apply --deploy-role-arn <arn> --plan-role-arn <arn>",
+            "docs": "docs/first-successful-pipeline.md#5-configure-github-repository-settings",
+            "context": context,
+        }
+    if not command_exists("aws"):
+        return {
+            "id": "missing_aws_evidence",
+            "title": "Install or configure AWS CLI",
+            "detail": "AWS evidence cannot be collected until AWS CLI is installed and authenticated.",
+            "command": "aws sts get-caller-identity && devsecops doctor aws --environment prod --strict",
+            "docs": "docs/troubleshooting.md#aws-doctor-cannot-inspect-resources",
+            "context": context,
+        }
+    aws_checks = collect_aws_checks(root, cfg, env_name="prod")
+    aws_identity = next((check for check in aws_checks if check.name == "AWS identity"), None)
+    if aws_identity is not None and aws_identity.status != "OK":
+        return {
+            "id": "missing_aws_evidence",
+            "title": "Collect AWS identity evidence",
+            "detail": "AWS CLI is installed, but account evidence is not available yet.",
+            "command": "aws sts get-caller-identity && devsecops doctor aws --environment prod --strict",
+            "docs": "docs/troubleshooting.md#aws-doctor-cannot-inspect-resources",
+            "context": context,
+        }
+    deployed_gaps = [check for check in aws_checks if check.scored and check.status != "OK"]
+    if deployed_gaps:
+        return {
+            "id": "ready_for_deploy",
+            "title": "Ready for deploy dispatch",
+            "detail": "Local setup is ready enough to start or inspect the production workflow; deployed AWS evidence is not complete yet.",
+            "command": "gh workflow run \"Secure Serverless DevSecOps Pipeline\" --ref main -f mode=deploy -f environment=prod",
+            "docs": "docs/first-successful-pipeline.md#7-run-the-production-workflow-dispatch",
+            "context": context,
+        }
+    return {
+        "id": "ready_for_release_evidence",
+        "title": "Ready for release evidence",
+        "detail": "Local config, project files, generated artifacts, GitHub tooling, and AWS deployed evidence are ready for RC collection.",
+        "command": "devsecops evidence collect --rc",
+        "docs": "docs/v1.0.0-release-candidate-checklist.md",
+        "context": context,
+    }
 
 
 def compact_error(result: subprocess.CompletedProcess[str]) -> str:
@@ -3652,6 +3922,8 @@ def score_status(score: int | None) -> str:
 
 
 def print_readiness_breakdown(checks: list[Check], compact: bool = False) -> None:
+    print_readiness_gates(checks)
+    print()
     grouped = grouped_readiness_checks(checks)
     rows: list[list[str]] = []
     for raw_row in readiness_breakdown_rows(checks, compact=compact):
@@ -3696,6 +3968,8 @@ def print_readiness_details(root: Path, deep: bool = False) -> None:
             "Use `devsecops doctor` for the full check list.",
         ],
     )
+    print()
+    print_readiness_gates(checks)
     rows = readiness_gap_rows(checks)
     print()
     if rows:
@@ -3765,6 +4039,7 @@ def checks_payload(kind: str, checks: list[Check], context: dict[str, Any] | Non
         "schema_version": CONTRACT_SCHEMA_VERSION,
         "score": readiness_score(checks),
         "overall_breakdown_score": overall_breakdown_score(checks),
+        "gates": readiness_gate_dicts(checks),
         "breakdown": readiness_breakdown_dicts(checks),
         "gaps": readiness_gap_dicts(checks),
         "checks": [check_to_dict(check) for check in checks],
@@ -3772,6 +4047,54 @@ def checks_payload(kind: str, checks: list[Check], context: dict[str, Any] | Non
     if context:
         payload["context"] = context
     return payload
+
+
+def check_status_by_name(checks: list[Check], name: str) -> str | None:
+    match = next((check for check in checks if check.name == name), None)
+    return match.status if match else None
+
+
+def readiness_gate_rows(checks: list[Check]) -> list[list[str]]:
+    local_config_ok = check_status_by_name(checks, "Local config") == "OK" and check_status_by_name(checks, "Config schema") != "FAIL"
+    project_files_ok = check_status_by_name(checks, "Project files") == "OK"
+    production_gaps = [check for check in checks if check.scored and check.status != "OK"]
+    release_ready = not production_gaps
+    return [
+        [
+            "Local config",
+            "OK" if local_config_ok else "Blocked",
+            "Config exists and schema checks pass." if local_config_ok else "Create or fix local source config.",
+        ],
+        [
+            "Project files",
+            "OK" if project_files_ok else "Blocked",
+            "Terraform and GitHub workflow files are present."
+            if project_files_ok
+            else "Run inside the DevSecOps pipeline repo/template or restore required files.",
+        ],
+        [
+            "Production readiness",
+            "OK" if not production_gaps else "Blocked",
+            "No scored readiness gaps."
+            if not production_gaps
+            else f"{len(production_gaps)} scored gap(s) remain before production deploy.",
+        ],
+        [
+            "Release evidence",
+            "Ready" if release_ready else "Blocked",
+            "Run `devsecops evidence collect --rc`."
+            if release_ready
+            else "Collect RC evidence only after production readiness is unblocked.",
+        ],
+    ]
+
+
+def readiness_gate_dicts(checks: list[Check]) -> list[dict[str, str]]:
+    return [{"gate": gate, "status": status, "detail": detail} for gate, status, detail in readiness_gate_rows(checks)]
+
+
+def print_readiness_gates(checks: list[Check]) -> None:
+    draw_table(["Gate", "Status", "Detail"], readiness_gate_rows(checks), title="Readiness Gates")
 
 
 def emit_json(payload: dict[str, Any]) -> None:
@@ -3808,6 +4131,27 @@ def strict_exit_code(checks: list[Check], strict: bool = False, fail_on_warn: bo
     if "auth" in gap_text or "authenticated" in gap_text or "login" in gap_text:
         return EXIT_AUTH_FAILED
     return EXIT_VALIDATION_FAILED
+
+
+def print_strict_validation_summary(checks: list[Check]) -> None:
+    blockers = [check for check in checks if check.scored and check.status == "FAIL"]
+    promoted = [check for check in checks if check.scored and check.status == "WARN"]
+    if not blockers and not promoted:
+        print(ok("Production blockers: none."))
+        return
+    print()
+    draw_box(
+        "Production Blockers",
+        [
+            f"Failures: {len(blockers)}",
+            f"Warnings promoted to failures by --strict: {len(promoted)}",
+            "Fix these before treating the pipeline as production-ready.",
+        ],
+    )
+    for check in [*blockers, *promoted]:
+        label = fail(check.status) if check.status == "FAIL" else warn(check.status)
+        print(f"{label} {check.name}: {check.detail}")
+        print(f"  Next command: {readiness_action_detail_for_check(check)}")
 
 
 def emit_check_output(
@@ -4521,11 +4865,166 @@ def cmd_tui(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_next(args: argparse.Namespace) -> int:
+    root = repo_root()
+    cfg = load_config(root)
+    action = next_action(root, cfg)
+    if getattr(args, "format", "human") == "json":
+        emit_json(
+            {
+                "kind": "next-action",
+                "schema_version": CONTRACT_SCHEMA_VERSION,
+                "context": action["context"],
+                "action": action["id"],
+                "title": action["title"],
+                "detail": action["detail"],
+                "command": action["command"],
+                "docs": action["docs"],
+            }
+        )
+        return EXIT_OK
+    draw_box(
+        "Next Action",
+        [
+            f"Context: {action['context']['stage']}",
+            f"Action: {action['id']}",
+            str(action["detail"]),
+            f"Command: {action['command']}",
+            f"Docs: {action['docs']}",
+        ],
+    )
+    return EXIT_OK
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    root = repo_root()
+    cfg = load_config(root)
+    context = project_context(root, cfg)
+    draw_box(
+        "Guided Start",
+        [
+            "Safe onboarding flow for the first successful pipeline path.",
+            f"Project context: {context['stage']}",
+            "No GitHub or AWS mutation is performed by this command.",
+        ],
+    )
+    if context["missing_project_files"]:
+        print()
+        print_next = argparse.Namespace(format="human")
+        return cmd_next(print_next)
+
+    if not context["config_exists"]:
+        preset_name = getattr(args, "preset", "balanced")
+        should_create = bool(getattr(args, "yes", False))
+        if not should_create:
+            try:
+                should_create = prompt_bool(f"Create {CONFIG_FILE} with `{preset_name}` preset", True, allow_cancel=True)
+            except InputCancelled:
+                print(info("Start cancelled. No files changed."))
+                return EXIT_OK
+        if should_create:
+            write_config(root, clean_config(preset_name))
+            print(ok("Created clean config ") + str(config_path(root)))
+            cfg = load_config(root)
+        else:
+            print(info("No config created."))
+
+    if getattr(args, "render", False) and config_path(root).exists():
+        render_result = run_render(root, snapshot=True)
+        if render_result != EXIT_OK:
+            return render_result
+
+    print()
+    draw_box(
+        "Image Requirement",
+        [
+            "Production deploy requires a prebuilt Lambda-compatible ECR image.",
+            "Use an immutable tag or digest; latest/bootstrap are rejected.",
+            "Validate it with `devsecops preflight --image-uri <immutable-ecr-image-uri>`.",
+        ],
+    )
+    print()
+    return cmd_next(argparse.Namespace(format="human"))
+
+
+def terraform_validate_evidence(root: Path) -> dict[str, Any]:
+    if not command_exists("terraform"):
+        return {"available": False, "returncode": None, "detail": "`terraform` not found on PATH."}
+    if missing_project_files(root):
+        return {"available": False, "returncode": None, "detail": "Required project files are missing."}
+    result = run_command(["terraform", "-chdir=terraform", "validate", "-no-color"], root, timeout=60)
+    return {
+        "available": True,
+        "returncode": result.returncode,
+        "detail": (result.stdout or result.stderr or "").strip() or "Terraform validate completed.",
+    }
+
+
+def collect_rc_evidence(root: Path, output_dir: Path) -> dict[str, Any]:
+    cfg = load_config(root)
+    checks = collect_checks(root, cfg, deep=False)
+    if not output_dir.is_absolute():
+        output_dir = root / output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    terraform_validate = terraform_validate_evidence(root)
+    files: dict[str, str] = {
+        "version.txt": f"devsecops {VERSION}\n",
+        "inventory.json": json.dumps(inventory_payload(), indent=2, sort_keys=True) + "\n",
+        "config-schema.json": json.dumps(config_schema(), indent=2, sort_keys=True) + "\n",
+        "config-schema.md": config_schema_markdown() + "\n",
+        "readiness.json": json.dumps(checks_payload("readiness", checks, context={"deep": False}), indent=2, sort_keys=True) + "\n",
+        "audit-report.json": audit_report_json(cfg, checks, deep=False),
+        "terraform-validate.txt": terraform_validate["detail"] + "\n",
+    }
+    written: list[str] = []
+    for name, content in files.items():
+        path = output_dir / name
+        path.write_text(content, encoding="utf-8")
+        written.append(str(path.relative_to(root)) if path.is_relative_to(root) else str(path))
+
+    manifest = {
+        "kind": "release-candidate-evidence",
+        "schema_version": CONTRACT_SCHEMA_VERSION,
+        "generated_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "output_dir": str(output_dir.relative_to(root)) if output_dir.is_relative_to(root) else str(output_dir),
+        "files": written,
+        "terraform_validate": terraform_validate,
+    }
+    manifest_path = output_dir / "manifest.json"
+    manifest["files"].append(str(manifest_path.relative_to(root)) if manifest_path.is_relative_to(root) else str(manifest_path))
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return manifest
+
+
+def cmd_evidence(args: argparse.Namespace) -> int:
+    command = getattr(args, "evidence_command", None)
+    if command != "collect":
+        print(fail("Usage: devsecops evidence collect --rc"))
+        return EXIT_VALIDATION_FAILED
+    if not getattr(args, "rc", False):
+        print(fail("Pass --rc to collect release-candidate evidence."))
+        return EXIT_VALIDATION_FAILED
+    manifest = collect_rc_evidence(repo_root(), Path(getattr(args, "output", None) or RC_EVIDENCE_DIR))
+    draw_box(
+        "Release Candidate Evidence",
+        [
+            f"Output: {manifest['output_dir']}",
+            f"Files: {len(manifest['files'])}",
+            f"Terraform validate: {manifest['terraform_validate']['detail']}",
+        ],
+    )
+    return EXIT_OK
+
+
 def cmd_validate_config(args: argparse.Namespace) -> int:
     cfg = load_config(repo_root())
     checks = validate_config(cfg)
-    emit_check_output("Config", checks, output_format=getattr(args, "format", "human"))
+    output_format = getattr(args, "format", "human")
+    emit_check_output("Config", checks, output_format=output_format)
     if getattr(args, "strict", False):
+        if output_format != "json":
+            print_strict_validation_summary(checks)
         return strict_exit_code(checks, strict=True, fail_on_warn=True)
     return EXIT_VALIDATION_FAILED if any(check.status == "FAIL" for check in checks) else EXIT_OK
 
@@ -4686,6 +5185,9 @@ def cmd_github_setup(args: argparse.Namespace) -> int:
     root = repo_root()
     cfg = load_config(root)
     if args.apply:
+        precheck = github_setup_precheck(root, cfg, args)
+        emit_check_output("GitHub Setup Precheck", precheck)
+        print()
         return apply_github_setup(root, cfg, args)
     script = github_setup_script(cfg)
     if args.write:
@@ -5925,6 +6427,7 @@ def build_parser() -> argparse.ArgumentParser:
               devsecops config new --preset balanced
               devsecops config validate
               devsecops config diff
+              devsecops next
               devsecops dry-run --image-uri <immutable-ecr-image-uri>
               devsecops render
               devsecops readiness
@@ -5960,7 +6463,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     subparsers = parser.add_subparsers(
         dest="command",
-        metavar="{menu,config,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,inventory,completion}",
+        metavar="{menu,config,next,start,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,inventory,evidence,completion}",
     )
     parser.set_defaults(func=cmd_menu)
 
@@ -5982,6 +6485,24 @@ def build_parser() -> argparse.ArgumentParser:
     inventory_parser.add_argument("--format", choices=["human", "markdown", "json"], default="human", help="Output mode.")
     inventory_parser.add_argument("--status", choices=["all", "stable", "alias", "experimental", "support"], default="all", help="Command status filter.")
     inventory_parser.set_defaults(func=cmd_inventory)
+
+    next_parser = subparsers.add_parser("next", help="Show the single next action for the current project context.")
+    next_parser.add_argument("--format", choices=["human", "json"], default="human", help="Output mode.")
+    next_parser.set_defaults(func=cmd_next)
+
+    start_parser = subparsers.add_parser("start", help="Run the guided safe first-start flow.")
+    start_parser.add_argument("--preset", choices=PRESET_ORDER, default="balanced", help="Preset to use when creating config.")
+    start_parser.add_argument("--render", action="store_true", help="Render artifacts after config exists.")
+    start_parser.add_argument("--yes", action="store_true", help="Create missing config without prompting.")
+    start_parser.set_defaults(func=cmd_start)
+
+    evidence_parser = subparsers.add_parser("evidence", help="Collect release or RC evidence artifacts.")
+    evidence_parser.set_defaults(func=cmd_evidence)
+    evidence_subparsers = evidence_parser.add_subparsers(dest="evidence_command", metavar="{collect}")
+    evidence_collect_parser = evidence_subparsers.add_parser("collect", help="Collect local release-candidate evidence artifacts.")
+    evidence_collect_parser.add_argument("--rc", action="store_true", help="Collect v1.0 release-candidate evidence.")
+    evidence_collect_parser.add_argument("--output", help=f"Output directory. Defaults to {RC_EVIDENCE_DIR}.")
+    evidence_collect_parser.set_defaults(func=cmd_evidence)
 
     tui_parser = subparsers.add_parser("tui", help=argparse.SUPPRESS)
     tui_parser.set_defaults(func=cmd_tui)

@@ -5,7 +5,27 @@ semantic versioning.
 
 ## Unreleased
 
-No unreleased changes.
+No changes yet.
+
+## v0.11.0 - 2026-06-13
+
+### Added
+
+* `v1.0.0` release-candidate checklist and evidence map for Milestone 10
+  hardening.
+* Known-limitations register that separates accepted limitations from blockers
+  before the stable release.
+* UX hardening commands: `devsecops next`, `devsecops start`, and
+  `devsecops evidence collect --rc`.
+
+### Changed
+
+* Python package metadata and install docs now align with the supported
+  Python 3.11, 3.12, and 3.13 compatibility matrix.
+* Readiness and strict config validation now make production blockers and
+  release-evidence readiness clearer.
+* Deep diagnostics now suppress cascaded Terraform/AWS warnings when root tools
+  or project files are missing.
 
 ## v0.10.0 - 2026-06-13
 

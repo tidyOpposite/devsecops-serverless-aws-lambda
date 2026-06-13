@@ -15,6 +15,7 @@ run does not write files and does not require AWS credentials.
 
 ```bash
 devsecops --version
+devsecops next
 devsecops dry-run \
   --preset balanced \
   --image-uri 123456789012.dkr.ecr.us-east-1.amazonaws.com/devsecops-pipeline-prod-lambda-repo:sha-abc123
@@ -48,10 +49,20 @@ dist/devsecops/github-setup.sh
 
 ## 2. Create Local Source Config
 
+Use the guided first-start flow when you want the CLI to explain the current
+context and create missing local config after confirmation:
+
+```bash
+devsecops start --preset balanced
+```
+
+For a non-interactive path:
+
 ```bash
 devsecops config new --preset balanced
 devsecops config validate
 devsecops config diff
+devsecops next
 ```
 
 Expected output:
@@ -146,6 +157,7 @@ devsecops doctor branch --branch main
 devsecops render
 devsecops readiness
 devsecops report
+devsecops next
 ```
 
 Expected output should either show no scored gaps or point to a concrete next
@@ -191,4 +203,9 @@ Expected deployed resources include the Lambda function, API Gateway, log
 group, and configured ECR image.
 
 For a release-ready evidence bundle after this succeeds, follow
-[Production deployment evidence](production-deployment-evidence.md).
+[Production deployment evidence](production-deployment-evidence.md), then collect
+local release-candidate evidence:
+
+```bash
+devsecops evidence collect --rc
+```

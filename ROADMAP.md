@@ -355,7 +355,13 @@ Acceptance criteria:
 ## Milestone 10: 1.0 Release Candidate Hardening
 
 Target release: `v0.11.0`.
-Status: planned.
+Status: release candidate shipped in `v0.11.0`.
+
+Current stage: `v0.11.0` ships the release-candidate evidence checklist,
+blocker register, guided onboarding UX, and local evidence helper. Do not mark
+`v1.0.0` stable until the blocker register in
+[`docs/v1.0.0-release-candidate-checklist.md`](docs/v1.0.0-release-candidate-checklist.md)
+is empty and the final production evidence bundle is attached.
 
 Problem: the final pre-1.0 release should close remaining stability gaps and
 turn the `Version 1.0 Criteria` into an evidence-based release checklist.

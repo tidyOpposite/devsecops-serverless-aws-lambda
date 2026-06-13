@@ -24,6 +24,7 @@ devsecops inventory --format json
 | `dist/devsecops/setup-checklist.md` | CLI-owned generated checklist | No | Update `.devsecops-pipeline.toml`, then run `devsecops render`. |
 | `dist/devsecops/readiness-report.md` | CLI-owned generated report | No | Run `devsecops report` after changing config or environment state. |
 | `dist/devsecops/audit-report.json` | CLI-owned generated audit evidence | No | Run `devsecops report --format json` after changing config, controls, readiness, or release evidence. |
+| `dist/devsecops/evidence/rc/*` | CLI-owned generated release-candidate evidence | No | Run `devsecops evidence collect --rc` after local validation or before attaching an RC evidence bundle. |
 | `.devsecops/snapshots/` | CLI-owned local recovery data | No | Created automatically before CLI-owned files are overwritten. Inspect with `devsecops snapshots`. |
 
 ## CLI-Owned Header
@@ -73,6 +74,7 @@ the artifact contract changed.
 | `dist/devsecops/setup-checklist.md` | Stable checklist | GitHub, backend, or branch-protection checklist contract changes | Checklist item values or required item additions. |
 | `dist/devsecops/readiness-report.md` | Stable report | Readiness checks, config values, or environment state changes | Generated timestamp, score/check/action rows, controls, and environment rows. |
 | `dist/devsecops/audit-report.json` | Stable JSON evidence | Audit evidence, readiness, config, or control state changes | `generated_at` timestamp and changed readiness/config/control payloads. |
+| `dist/devsecops/evidence/rc/manifest.json` | Stable RC evidence manifest | Release-candidate evidence is collected | `generated_at`, evidence file list, and Terraform validation status. |
 
 If a re-render diff only contains expected value changes, review and continue.
 Unexpected new files, missing CLI-owned headers, or changed GitHub/AWS mutation

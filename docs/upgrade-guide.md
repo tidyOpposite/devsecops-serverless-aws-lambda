@@ -9,9 +9,9 @@ The broader stability and deprecation policy is documented in
 
 ## Current Schema
 
-`v0.10.0` uses config schema version `1`.
+`v0.11.0` uses config schema version `1`.
 
-There is no config schema migration in `v0.10.0`. Existing
+There is no config schema migration in `v0.11.0`. Existing
 `.devsecops-pipeline.toml` files with `schema_version = 1`, or legacy files
 without the field, continue to normalize to schema version `1`.
 

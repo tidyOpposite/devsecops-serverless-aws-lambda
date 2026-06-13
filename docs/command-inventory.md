@@ -27,6 +27,7 @@ devsecops inventory --format json
 The README quick start and `devsecops --help` use the same first-run path:
 
 ```bash
+devsecops next
 devsecops config new --preset balanced
 devsecops config validate
 devsecops config diff
@@ -43,6 +44,8 @@ Use `devsecops menu` when you prefer the interactive path.
 | Command | Status | Scope | Notes |
 | --- | --- | --- | --- |
 | `devsecops menu` | Stable | Interactive CLI | Opens the main terminal menu. Default command when no subcommand is passed. |
+| `devsecops next` | Stable | First success | Shows the single next action for the current project context. Supports `--format human\|json`. |
+| `devsecops start` | Stable | First success | Guided safe onboarding flow. Creates config only after confirmation or `--yes`; never mutates GitHub or AWS. |
 | `devsecops init` | Alias | Configuration | Legacy interactive entry point for creating or updating `.devsecops-pipeline.toml`. Prefer `devsecops config new` for clean non-interactive config generation. |
 | `devsecops readiness` | Stable | Diagnostics | Shows scored readiness gaps and concrete next actions. Supports `--strict` and `--format human\|compact\|json`. |
 | `devsecops dry-run` | Stable | First success | Previews the first-success path without writing files or requiring AWS credentials. |
@@ -50,6 +53,7 @@ Use `devsecops menu` when you prefer the interactive path.
 | `devsecops health` | Stable | Operations | Validates the deployed `/health` endpoint outside GitHub Actions. Uses Terraform output unless `--url` is provided. |
 | `devsecops render` | Stable | Generation | Writes CLI-owned Terraform and GitHub helper artifacts. Use `--dry-run` to preview file changes. |
 | `devsecops report` | Stable | Reporting | Writes a CLI-owned Markdown readiness report or JSON audit evidence with `--format json`. |
+| `devsecops evidence collect` | Stable | Reporting | Collects local release-candidate evidence artifacts with `--rc`. |
 | `devsecops dashboard` | Stable | Diagnostics | Prints a one-screen readiness dashboard. |
 | `devsecops inventory` | Stable | Stability | Prints the command, flag, JSON output, generated artifact, deprecation, and migration contract. Supports `--format human\|markdown\|json` and `--status all\|stable\|alias\|experimental\|support`. |
 | `devsecops completion <shell>` | Stable | Distribution | Prints dependency-free shell completion for `bash`, `zsh`, or `fish`. |
@@ -112,6 +116,8 @@ Use `devsecops menu` when you prefer the interactive path.
 | Workflow | Example |
 | --- | --- |
 | Interactive menu | `devsecops menu` |
+| Next action | `devsecops next` |
+| Guided start | `devsecops start --preset balanced` |
 | Dashboard | `devsecops dashboard --mode compact` |
 | Shell completion | `devsecops completion bash` |
 | Clean config | `devsecops config new --preset balanced` |
@@ -125,7 +131,9 @@ Use `devsecops menu` when you prefer the interactive path.
 | Render artifacts | `devsecops render` |
 | Render dry run | `devsecops render --dry-run` |
 | Audit evidence | `devsecops report --format json` |
+| RC evidence collection | `devsecops evidence collect --rc` |
 | Production evidence guide | `docs/production-deployment-evidence.md` |
+| Release candidate checklist | `docs/v1.0.0-release-candidate-checklist.md` |
 | Stability contract JSON | `devsecops inventory --format json` |
 | First-success dry run | `devsecops dry-run --image-uri <immutable-ecr-image-uri>` |
 | Image preflight | `devsecops preflight --image-uri <immutable-ecr-image-uri>` |

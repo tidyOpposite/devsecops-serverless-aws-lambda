@@ -5,7 +5,7 @@ contract for released DevSecOps Pipeline Kit CLI versions.
 
 ## Published Package Path
 
-The canonical package path for `v0.10.0` is GitHub Releases:
+The canonical package path for `v0.11.0` is GitHub Releases:
 
 * Repository: `tidyOpposite/devsecops-serverless-aws-lambda`
 * Release tag format: `vX.Y.Z`
@@ -21,8 +21,8 @@ the source tree.
 
 ## Install The Latest Release
 
-Use a Python 3.11+ interpreter. Set `PYTHON` when your binary is named
-`python3.12`, `python3.13`, or another supported version.
+Use a Python 3.11, 3.12, or 3.13 interpreter. Set `PYTHON` when your binary is
+named `python3.12` or `python3.13`.
 
 ```bash
 PYTHON="${PYTHON:-python3.11}"
@@ -53,18 +53,19 @@ PY
 devsecops --version
 ```
 
-Pinned install for `v0.10.0`:
+Pinned install for `v0.11.0`:
 
 ```bash
 python3.11 -m pipx install --python python3.11 \
-  "devsecops-pipeline-cli @ https://github.com/tidyOpposite/devsecops-serverless-aws-lambda/releases/download/v0.10.0/devsecops_pipeline_cli-0.10.0-py3-none-any.whl"
+  "devsecops-pipeline-cli @ https://github.com/tidyOpposite/devsecops-serverless-aws-lambda/releases/download/v0.11.0/devsecops_pipeline_cli-0.11.0-py3-none-any.whl"
 devsecops --version
 ```
 
 Development installs still use the local checkout:
 
 ```bash
-python3 -m pip install -e .
+PYTHON="${PYTHON:-python3.11}"
+"${PYTHON}" -m pip install -e .
 devsecops --version
 ```
 
@@ -91,7 +92,7 @@ Every GitHub Release includes `SHA256SUMS` for the wheel and source
 distribution.
 
 ```bash
-VERSION="0.10.0"
+VERSION="0.11.0"
 TAG="v${VERSION}"
 BASE_URL="https://github.com/tidyOpposite/devsecops-serverless-aws-lambda/releases/download/${TAG}"
 WHEEL="devsecops_pipeline_cli-${VERSION}-py3-none-any.whl"
@@ -145,11 +146,13 @@ devsecops completion bash --program devsecops-dev
 | --- | --- | --- |
 | Ubuntu Linux | Ubuntu 22.04 LTS and 24.04 LTS on x86_64 or arm64 | GitHub Actions runs package, unit, golden, install, Terraform fmt, init, and validate checks on Ubuntu. |
 | macOS | macOS 13 or newer on Intel or Apple Silicon | Supported for local CLI usage with Python, Terraform, AWS CLI, GitHub CLI, and shell completion installed by the operator. |
-| Windows | WSL2 Ubuntu is supported. Native Windows is not a `v0.10.0` release target. | Native PowerShell/CMD completion and path behavior are not release-gated. |
-| Python | 3.11, 3.12, and 3.13 | CLI tests, packaging, and install smoke run in CI for all supported Python versions. |
+| Windows | WSL2 Ubuntu is supported. Native Windows is not a `v0.11.0` release target. | Native PowerShell/CMD completion and path behavior are not release-gated. |
+| Python | 3.11, 3.12, and 3.13 | CLI tests, packaging, and install smoke run in CI for all supported Python versions. Package metadata uses `requires-python = ">=3.11,<3.14"` so unsupported Python releases are not advertised as supported. |
 | Terraform CLI | 1.5.0 or newer | Terraform `required_version` is `>= 1.5.0`; CI validates with the pinned workflow version. |
 | GitHub CLI | 2.45.0 or newer | Required for `gh variable`, `gh secret`, `gh api`, and `gh run` workflows. Missing-tool behavior is tested; run `devsecops doctor github` in real repositories. |
 | AWS CLI | 2.15.0 or newer | Required for AWS diagnostics, backend checks, ECR inspection, Lambda outputs, and health-adjacent workflows. AWS CLI v1 is not supported. |
 
-Newer versions may work, but they are not considered supported until this matrix
-or the CI release gate is updated.
+Newer Terraform, GitHub CLI, and AWS CLI versions may work, but they are not
+considered supported until this matrix or the CI release gate is updated.
+Python 3.14 and newer are intentionally outside the support matrix until CI and
+release smoke tests cover them.
