@@ -52,6 +52,15 @@ checks.
 are CLI-owned generated artifacts. Do not edit generated files directly for
 durable changes; update the local config and regenerate them.
 
+Stable command flags, compatibility aliases, experimental commands, JSON output
+kinds, config migration rules, and generated artifact compatibility are
+documented in [Stability contract](docs/stability-contract.md). The
+machine-readable inventory is available with:
+
+```bash
+devsecops inventory --format json
+```
+
 ## Architecture
 
 ```mermaid
@@ -247,6 +256,7 @@ devsecops snapshot restore --last --dry-run
 
 devsecops envs          # environment settings table
 devsecops controls      # security controls matrix
+devsecops inventory --format json # stable command/JSON/artifact contract
 devsecops completion bash # print shell completion for bash, zsh, or fish
 devsecops render        # writes ignored Terraform/GitHub helper artifacts
 devsecops render --dry-run
@@ -327,6 +337,13 @@ devsecops github status --format compact --strict
 `github status` and `doctor actions` show failed jobs, failed steps, concrete
 next actions, and runbook links. Use `readiness --strict` in CI when any scored
 gap should fail the command.
+
+For release review or production proof, collect an attachable evidence bundle
+with the commands in
+[Production deployment evidence](docs/production-deployment-evidence.md). The
+bundle captures release verification, strict config/readiness output, GitHub
+setup, workflow status, Terraform outputs, AWS outputs, health checks,
+CloudWatch logs, and rollback readiness.
 
 The `set` command supports non-interactive configuration for scripts and quick
 edits:
@@ -485,7 +502,9 @@ and [Security controls and policy presets](docs/security-controls.md).
 ## Deployment Flow
 
 For a command-by-command walkthrough with expected output, see
-[First successful pipeline](docs/first-successful-pipeline.md).
+[First successful pipeline](docs/first-successful-pipeline.md). For a
+production-proof release record, use
+[Production deployment evidence](docs/production-deployment-evidence.md).
 
 1. Configure local pipeline state with `devsecops compose`, `init`, `set`, or
    `preset`.
@@ -562,8 +581,10 @@ devsecops health
 * [Troubleshooting guide](docs/troubleshooting.md)
 * [Product roadmap](ROADMAP.md)
 * [Command inventory](docs/command-inventory.md)
+* [Stability contract](docs/stability-contract.md)
 * [Generated artifacts](docs/generated-artifacts.md)
 * [First successful pipeline](docs/first-successful-pipeline.md)
+* [Production deployment evidence](docs/production-deployment-evidence.md)
 * [Bring your own Lambda image](docs/bring-your-own-image.md)
 * [Separate example workload template](docs/example-workload-template.md)
 * [Operational runbooks](docs/runbooks/README.md)
@@ -572,6 +593,7 @@ devsecops health
 * [Release checklist](docs/release-checklist.md)
 * [Upgrade guide](docs/upgrade-guide.md)
 * [Changelog](CHANGELOG.md)
+* [v0.10.0 release notes](docs/release-v0.10.0.md)
 * [v0.8.0 release notes](docs/release-v0.8.0.md)
 * [v0.7.0 release notes](docs/release-v0.7.0.md)
 * [v0.6.1 release notes](docs/release-v0.6.1.md)

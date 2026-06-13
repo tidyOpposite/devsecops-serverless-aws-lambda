@@ -5,6 +5,14 @@ status of each command. It is a product contract: users should know which
 commands are the preferred workflow, which commands are compatibility aliases,
 and which commands may still change.
 
+For the normative stability, deprecation, migration, JSON, and generated
+artifact contract, see [Stability contract](stability-contract.md). The same
+contract is available as machine-readable JSON:
+
+```bash
+devsecops inventory --format json
+```
+
 ## Status Legend
 
 | Status | Meaning |
@@ -43,6 +51,7 @@ Use `devsecops menu` when you prefer the interactive path.
 | `devsecops render` | Stable | Generation | Writes CLI-owned Terraform and GitHub helper artifacts. Use `--dry-run` to preview file changes. |
 | `devsecops report` | Stable | Reporting | Writes a CLI-owned Markdown readiness report or JSON audit evidence with `--format json`. |
 | `devsecops dashboard` | Stable | Diagnostics | Prints a one-screen readiness dashboard. |
+| `devsecops inventory` | Stable | Stability | Prints the command, flag, JSON output, generated artifact, deprecation, and migration contract. Supports `--format human\|markdown\|json` and `--status all\|stable\|alias\|experimental\|support`. |
 | `devsecops completion <shell>` | Stable | Distribution | Prints dependency-free shell completion for `bash`, `zsh`, or `fish`. |
 | `devsecops doctor` | Stable | Diagnostics | Primary diagnostics group for local, GitHub, AWS, branch, Actions, and all-in-one checks. |
 | `devsecops doctor local` | Stable | Diagnostics | Checks local readiness. `--deep` adds external Terraform/AWS checks and may vary by installed tools. |
@@ -88,8 +97,8 @@ Use `devsecops menu` when you prefer the interactive path.
 | `devsecops branch-doctor` | Alias | GitHub | Compatibility alias for `devsecops doctor branch`. |
 | `devsecops aws-doctor` | Alias | AWS | Compatibility alias for `devsecops doctor aws`. |
 | `devsecops terraform` | Stable | Terraform | Primary Terraform group for plan and backend bootstrap helpers. |
-| `devsecops terraform plan <env>` | Experimental | Terraform | Convenience wrapper for Terraform plan against an environment workspace. |
-| `devsecops terraform bootstrap` | Experimental | Terraform | Plans or applies the Terraform backend bootstrap stack. Mutates AWS only with `--apply`. |
+| `devsecops terraform plan <env>` | Stable | Terraform | Convenience wrapper for Terraform plan against an environment workspace. Delegates to Terraform without hiding Terraform output. |
+| `devsecops terraform bootstrap` | Stable | Terraform | Plans or applies the Terraform backend bootstrap stack. Mutates AWS only with `--apply`. |
 | `devsecops plan <env>` | Alias | Terraform | Compatibility alias for `devsecops terraform plan <env>`. |
 | `devsecops bootstrap` | Alias | Terraform | Compatibility alias for `devsecops terraform bootstrap`. |
 | `devsecops envs` | Support | Inspection | Prints environment settings. |
@@ -116,6 +125,8 @@ Use `devsecops menu` when you prefer the interactive path.
 | Render artifacts | `devsecops render` |
 | Render dry run | `devsecops render --dry-run` |
 | Audit evidence | `devsecops report --format json` |
+| Production evidence guide | `docs/production-deployment-evidence.md` |
+| Stability contract JSON | `devsecops inventory --format json` |
 | First-success dry run | `devsecops dry-run --image-uri <immutable-ecr-image-uri>` |
 | Image preflight | `devsecops preflight --image-uri <immutable-ecr-image-uri>` |
 | Readiness | `devsecops readiness --format json` |
@@ -168,6 +179,45 @@ execution layers that operators can inspect directly.
 Commands that mutate local files create snapshots where appropriate. Commands
 that mutate GitHub or AWS require explicit flags such as `--apply` and should
 be reviewed before use in production.
+
+## Stable Script Contract
+
+Stable commands, documented flags, exit codes, generated file paths, and JSON
+`kind` values are safe to script against within normal semver expectations.
+Human table layout can still be improved. Prefer JSON output for automation:
+
+```bash
+devsecops config validate --format json
+devsecops readiness --format json
+devsecops doctor github --format json
+devsecops aws outputs --format json
+devsecops inventory --format json
+```
+
+Aliases remain callable through at least `v1.0.0`, but new scripts should use
+the grouped stable command. Experimental commands are not part of the
+first-success workflow and can change in a `0.x` minor release.
+
+## Production Evidence Workflow
+
+Milestone 8 production proof uses existing stable commands instead of a new
+command surface:
+
+```bash
+devsecops config validate --strict --format json
+devsecops readiness --strict --format json
+devsecops report --format json
+devsecops doctor github --format json
+devsecops doctor branch --branch main --format json
+devsecops github status --format json
+devsecops aws outputs --environment prod --format json
+devsecops doctor aws --environment prod --strict --format json
+devsecops health --url <health-url> --format json
+```
+
+Use [Production deployment evidence](production-deployment-evidence.md) for the
+full evidence bundle layout, production dispatch commands, post-deploy
+checklist, and runbook update gate.
 
 ## Exit Codes
 

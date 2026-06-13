@@ -7,6 +7,24 @@ semantic versioning.
 
 No unreleased changes.
 
+## v0.10.0 - 2026-06-13
+
+### Added
+
+* Production deployment evidence guide for Milestone 8, including evidence
+  bundle layout, production workflow dispatch capture, Terraform/AWS/health
+  proof, rollback-readiness checks, and real-account lessons to record.
+* Stability contract for Milestone 9, including machine-readable command
+  inventory, deprecation policy, JSON output contract, config migration
+  expectations, and generated artifact compatibility notes.
+
+### Changed
+
+* Release checklist now includes a production evidence gate for releases that
+  claim production proof.
+* Terraform helper commands are part of the stable command contract for the
+  documented first-success workflow.
+
 ## v0.8.0 - 2026-06-12
 
 ### Added

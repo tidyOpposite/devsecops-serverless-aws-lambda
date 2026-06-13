@@ -5,6 +5,13 @@ artifacts. This keeps the CLI product predictable: users edit or create local
 configuration, then the CLI renders deterministic files for Terraform, GitHub,
 and operator checklists.
 
+The generated artifact compatibility contract is also listed in
+[Stability contract](stability-contract.md) and in machine-readable form:
+
+```bash
+devsecops inventory --format json
+```
+
 ## Ownership Rules
 
 | File | Owner | Commit? | How to change it |
@@ -49,6 +56,27 @@ workflow artifacts, or release records. It summarizes readiness checks,
 strict config validation, control catalog state, policy preset posture, and
 least-privilege role guidance. It is still generated output, not durable source
 configuration.
+
+## Compatibility And Re-rendering
+
+Generated artifacts are deterministic outputs of local source config plus the
+CLI generator version. Re-render when config values change, when a documented
+schema migration changes normalized config values, or when release notes say
+the artifact contract changed.
+
+| File | Compatibility | Re-render when | Expected diffs |
+| --- | --- | --- | --- |
+| `terraform/generated.auto.tfvars` | Stable Terraform variables | Config values, schema migration output, or Terraform variable contract changes | HCL assignment values and `environment_config` entries. |
+| `dist/devsecops/backend.tf` | Stable review template | `backend.*` config values or backend template policy changes | S3 backend attributes such as bucket, key, region, lock table, or workspace prefix. |
+| `dist/devsecops/github-variables.env` | Stable helper | Repository variable source config changes | `PROJECT_NAME`, `LAMBDA_IMAGE_URI`, `ENABLE_*`, or `PROD_APPROVAL_ENVIRONMENT` values. |
+| `dist/devsecops/github-setup.sh` | Stable helper script | GitHub variable or required secret contract changes | `gh variable` commands, Snyk token requirement, or CLI-owned header changes. |
+| `dist/devsecops/setup-checklist.md` | Stable checklist | GitHub, backend, or branch-protection checklist contract changes | Checklist item values or required item additions. |
+| `dist/devsecops/readiness-report.md` | Stable report | Readiness checks, config values, or environment state changes | Generated timestamp, score/check/action rows, controls, and environment rows. |
+| `dist/devsecops/audit-report.json` | Stable JSON evidence | Audit evidence, readiness, config, or control state changes | `generated_at` timestamp and changed readiness/config/control payloads. |
+
+If a re-render diff only contains expected value changes, review and continue.
+Unexpected new files, missing CLI-owned headers, or changed GitHub/AWS mutation
+commands should be treated as release-review findings before applying them.
 
 ## Backend Template Exception
 

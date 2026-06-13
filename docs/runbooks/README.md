@@ -14,3 +14,8 @@ path.
 
 All commands are read-only unless a command explicitly includes `--apply`,
 `--yes`, or a GitHub/AWS mutating command shown for manual recovery.
+
+During a production proof walkthrough, attach the relevant runbook link to the
+evidence bundle. If a failure does not fit one of these runbooks, add or update
+a runbook before marking the release production-proven. See
+[Production deployment evidence](../production-deployment-evidence.md).

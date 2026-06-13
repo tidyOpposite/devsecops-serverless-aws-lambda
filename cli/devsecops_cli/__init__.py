@@ -2,7 +2,7 @@
 
 from importlib import import_module
 
-VERSION = "0.8.0"
+VERSION = "0.10.0"
 __version__ = VERSION
 
 __all__ = ["VERSION", "__version__", "main"]

@@ -287,6 +287,100 @@ Acceptance criteria:
 * Upgrade behavior is documented before config schema changes ship.
 * Release artifacts can be verified.
 
+## Milestone 8: Production Proof And Deployment Evidence
+
+Target release: `v0.9.0`.
+Status: in progress.
+
+Problem: the project has strong local validation and dry-run workflows, but it
+still needs one documented real AWS/GitHub happy path with evidence that a new
+operator can trust and reproduce.
+
+Deliverables:
+
+* [x] Production deployment evidence workflow that operators can run against a
+  real AWS account and GitHub repository.
+* [x] Captured release, setup, workflow, Terraform, AWS output, and
+  health-check evidence bundle contract that can be attached to a release
+  record.
+* [x] Post-deploy verification checklist for Lambda, API Gateway, CloudWatch
+  logs, Terraform outputs, GitHub Actions status, and rollback readiness.
+* [x] Documented real-account lessons to record, including required IAM,
+  backend, branch protection, and image-publishing prerequisites.
+* [x] Release checklist and runbook gate for failure modes discovered during
+  the production walkthrough.
+* [ ] Full production deployment walkthrough executed against a real AWS
+  account and GitHub repository.
+
+Acceptance criteria:
+
+* [ ] A new operator can reproduce one documented production deployment from a
+  fresh install.
+* [ ] The walkthrough proves the deployed API outputs and readiness evidence
+  match the documented expectations.
+* [ ] Release evidence is concrete enough to review without inspecting the
+  source tree.
+
+## Milestone 9: Stability Contract And Migration Readiness
+
+Target release: `v0.10.0`.
+Status: implemented in `v0.10.0`.
+
+Problem: before `v1.0.0`, the public CLI, config schema, generated artifacts,
+and compatibility promises need an explicit stability contract so users know
+what can change and how migrations will be handled.
+
+Deliverables:
+
+* [x] Stable command and flag contract for first-success, diagnostics, rendering,
+  GitHub setup, Terraform helpers, snapshots, reports, and completions.
+* [x] Deprecation policy for aliases, experimental commands, output formats, and
+  config fields.
+* [x] Tested config schema migration rules for future schema versions, including
+  rollback expectations for CLI-owned files.
+* [x] Generated artifact compatibility notes that explain when re-rendering is
+  required and what diffs users should expect.
+* [x] Stronger help, command inventory, JSON output, completion, and generated
+  artifact regression coverage.
+
+Acceptance criteria:
+
+* [x] No documented first-success workflow depends on behavior still marked
+  experimental.
+* [x] Future config schema changes have documented and tested migration
+  expectations before they ship.
+* [x] Users can tell which commands, flags, files, and output shapes are stable
+  enough to script against.
+
+## Milestone 10: 1.0 Release Candidate Hardening
+
+Target release: `v0.11.0`.
+Status: planned.
+
+Problem: the final pre-1.0 release should close remaining stability gaps and
+turn the `Version 1.0 Criteria` into an evidence-based release checklist.
+
+Deliverables:
+
+* `v1.0.0` release-candidate checklist that maps each stability criterion to
+  commands, docs, tests, or release artifacts.
+* Compatibility verification pass across supported operating systems, Python
+  versions, Terraform versions, GitHub CLI versions, and AWS CLI versions.
+* Documentation audit for quick start, first-success path, upgrade guide,
+  troubleshooting, runbooks, command inventory, and generated artifacts.
+* Security review of GitHub Actions permissions, OIDC role guidance, Terraform
+  validation, scanner gates, rollback behavior, and audit evidence.
+* Known-limitations review that separates accepted limitations from blockers
+  for `v1.0.0`.
+* Final criteria evidence map for the stable release record.
+
+Acceptance criteria:
+
+* Every `Version 1.0 Criteria` bullet has a linked or named evidence source.
+* No unresolved blocker remains for `v1.0.0`.
+* The project can publish a release candidate whose install, upgrade,
+  verification, deployment, and rollback paths are all documented and tested.
+
 ## Version 1.0 Criteria
 
 The project should not be called stable until all of these are true:

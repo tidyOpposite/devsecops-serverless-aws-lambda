@@ -55,7 +55,7 @@ def project_version(path: Path) -> str:
 
 class DevSecOpsCliTests(unittest.TestCase):
     def test_version_metadata_is_consistent(self) -> None:
-        self.assertEqual(cli.VERSION, "0.8.0")
+        self.assertEqual(cli.VERSION, "0.10.0")
         self.assertEqual(package.VERSION, cli.VERSION)
         self.assertEqual(package.__version__, cli.VERSION)
         self.assertEqual(project_version(ROOT_DIR / "pyproject.toml"), cli.VERSION)
@@ -108,6 +108,36 @@ class DevSecOpsCliTests(unittest.TestCase):
 
         self.assertEqual(loaded["schema_version"], cli.CONFIG_SCHEMA_VERSION)
         self.assertEqual(loaded["project_name"], "legacy-app")
+
+    def test_future_config_schema_version_fails_closed_before_rendering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / cli.CONFIG_FILE).write_text(
+                f"schema_version = {cli.CONFIG_SCHEMA_VERSION + 1}\nproject_name = \"future-app\"\n",
+                encoding="utf-8",
+            )
+            with patch.object(cli, "repo_root", return_value=root):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["render"])
+
+            self.assertFalse((root / cli.GENERATED_TFVARS).exists())
+
+        self.assertEqual(result, cli.EXIT_VALIDATION_FAILED)
+        self.assertIn("Config migration error", buffer.getvalue())
+
+    def test_config_schema_documents_migration_and_rollback_contract(self) -> None:
+        schema = cli.config_schema()
+        migration = schema["migration"]
+
+        self.assertEqual(migration["current_schema_version"], cli.CONFIG_SCHEMA_VERSION)
+        self.assertIn("future_schema_version", migration)
+        self.assertTrue(any("snapshot restore" in item for item in migration["rollback_expectations"]))
+
+        markdown = cli.config_schema_markdown()
+        self.assertIn("Migration Contract", markdown)
+        self.assertIn("future `schema_version`", markdown)
+        self.assertIn("Snapshot restore", markdown)
 
     def test_clean_config_has_no_secret_fields(self) -> None:
         rendered = cli.dump_config_toml(cli.clean_config("balanced"))
@@ -202,6 +232,22 @@ class DevSecOpsCliTests(unittest.TestCase):
             second = rendered_artifact_contents(root)
 
         self.assertEqual(first, second)
+
+    def test_generated_artifact_contract_matches_render_outputs_and_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outputs = cli.render_outputs(root, golden_config())
+
+        rendered_paths = {str(path.relative_to(root)) for path in outputs}
+        contract_paths = {item["path"] for item in cli.GENERATED_ARTIFACT_CONTRACTS if item["producer"].startswith("devsecops render")}
+
+        self.assertTrue(rendered_paths.issubset(contract_paths))
+        self.assertIn(str(cli.GENERATED_TFVARS), contract_paths)
+        self.assertIn(str(cli.DIST_DIR / "github-setup.sh"), contract_paths)
+        self.assertTrue(rendered_paths.issubset(cli.SNAPSHOT_FILE_PATHS))
+        for item in cli.GENERATED_ARTIFACT_CONTRACTS:
+            self.assertTrue(item["rerender_required_when"])
+            self.assertTrue(item["expected_diffs"])
 
     def test_e2e_config_validate_render_report_in_temp_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -323,6 +369,63 @@ class DevSecOpsCliTests(unittest.TestCase):
             self.assertIn("CLI-owned generated", artifact)
             self.assertIn("Do not edit directly", artifact)
 
+    def test_production_evidence_docs_cover_milestone_eight_contract(self) -> None:
+        evidence_doc = (ROOT_DIR / "docs/production-deployment-evidence.md").read_text(encoding="utf-8")
+        readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+        command_inventory = (ROOT_DIR / "docs/command-inventory.md").read_text(encoding="utf-8")
+        release_checklist = (ROOT_DIR / "docs/release-checklist.md").read_text(encoding="utf-8")
+        roadmap = (ROOT_DIR / "ROADMAP.md").read_text(encoding="utf-8")
+
+        for required in [
+            "release-install.txt",
+            "workflow-run.json",
+            "terraform-output.json",
+            "aws-outputs.json",
+            "health.json",
+            "cloudwatch-tail.txt",
+            "active-lambda-image.txt",
+            "devsecops readiness --strict --format json",
+            "devsecops doctor aws --environment prod --strict --format json",
+            "Roll back Lambda image on failed deployment validation",
+        ]:
+            self.assertIn(required, evidence_doc)
+
+        self.assertIn("[Production deployment evidence](docs/production-deployment-evidence.md)", readme)
+        self.assertIn("Production Evidence Workflow", command_inventory)
+        self.assertIn("Production Evidence Gate", release_checklist)
+        self.assertIn("Status: in progress.", roadmap)
+        self.assertIn("Full production deployment walkthrough executed", roadmap)
+
+    def test_stability_contract_docs_cover_milestone_nine_contract(self) -> None:
+        stability_doc = (ROOT_DIR / "docs/stability-contract.md").read_text(encoding="utf-8")
+        generated_doc = (ROOT_DIR / "docs/generated-artifacts.md").read_text(encoding="utf-8")
+        upgrade_doc = (ROOT_DIR / "docs/upgrade-guide.md").read_text(encoding="utf-8")
+        command_inventory = (ROOT_DIR / "docs/command-inventory.md").read_text(encoding="utf-8")
+        release_checklist = (ROOT_DIR / "docs/release-checklist.md").read_text(encoding="utf-8")
+        readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+        roadmap = (ROOT_DIR / "ROADMAP.md").read_text(encoding="utf-8")
+
+        for required in [
+            "devsecops inventory --format json",
+            "devsecops terraform bootstrap --apply",
+            "JSON Output Contract",
+            "Deprecation Policy",
+            "Config Migration Rules",
+            "Generated Artifact Compatibility",
+            "Configs with `schema_version` greater than the current CLI supports",
+            "Rollback after migration is local only",
+        ]:
+            self.assertIn(required, stability_doc)
+
+        self.assertIn("[Stability contract](stability-contract.md)", command_inventory)
+        self.assertIn("devsecops inventory --format json", command_inventory)
+        self.assertIn("Compatibility And Re-rendering", generated_doc)
+        self.assertIn("future `schema_version` greater than this CLI", upgrade_doc)
+        self.assertIn("Stability Contract Gate", release_checklist)
+        self.assertIn("[Stability contract](docs/stability-contract.md)", readme)
+        self.assertIn("Milestone 9: Stability Contract And Migration Readiness", roadmap)
+        self.assertIn("Status: implemented in `v0.10.0`.", roadmap)
+
     def test_help_documents_product_contract_and_first_run(self) -> None:
         help_text = cli.build_parser().format_help()
         self.assertIn("CLI product", help_text)
@@ -334,13 +437,15 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("devsecops render", help_text)
         self.assertIn("devsecops readiness", help_text)
         self.assertIn("devsecops report", help_text)
+        self.assertIn("devsecops inventory --format json", help_text)
+        self.assertIn("Stability contract:", help_text)
         self.assertIn("docs/command-inventory.md", help_text)
         self.assertIn("docs/generated-artifacts.md", help_text)
 
     def test_top_level_help_is_grouped_and_legacy_aliases_are_not_primary_choices(self) -> None:
         help_text = cli.build_parser().format_help()
         self.assertIn(
-            "{menu,config,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,completion}",
+            "{menu,config,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,inventory,completion}",
             help_text,
         )
         self.assertIn("Legacy aliases still work", help_text)
@@ -360,6 +465,8 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("#compdef devsecops", zsh)
         self.assertIn("compadd 'menu' 'config'", zsh)
         self.assertIn("complete -c devsecops", fish)
+        self.assertIn("inventory", bash)
+        self.assertIn("inventory", zsh)
         self.assertIn("completion", fish)
 
         buffer = io.StringIO()
@@ -367,6 +474,69 @@ class DevSecOpsCliTests(unittest.TestCase):
             result = cli.main(["completion", "bash"])
         self.assertEqual(result, cli.EXIT_OK)
         self.assertIn("bash completion for devsecops", buffer.getvalue())
+
+    def test_command_inventory_json_exposes_stability_contract(self) -> None:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            result = cli.main(["inventory", "--format", "json"])
+
+        payload = json.loads(buffer.getvalue())
+        by_command = {item["command"]: item for item in payload["commands"]}
+
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertEqual(payload["kind"], "command-inventory")
+        self.assertEqual(payload["schema_version"], cli.CONTRACT_SCHEMA_VERSION)
+        self.assertEqual(by_command["devsecops terraform plan"]["status"], "stable")
+        self.assertEqual(by_command["devsecops terraform bootstrap"]["status"], "stable")
+        self.assertEqual(by_command["devsecops rollback"]["alias_for"], "devsecops snapshot restore")
+        self.assertEqual(by_command["devsecops compose"]["status"], "experimental")
+        self.assertIn("aliases", payload["deprecation_policy"])
+        self.assertTrue(any(item["kind"] == "readiness" for item in payload["json_outputs"]))
+        self.assertTrue(any(item["path"] == str(cli.GENERATED_TFVARS) for item in payload["generated_artifacts"]))
+        self.assertIn("future_schema_version", payload["config_migration"])
+
+    def test_command_inventory_status_filter_and_markdown(self) -> None:
+        json_buffer = io.StringIO()
+        with redirect_stdout(json_buffer):
+            result = cli.main(["inventory", "--status", "experimental", "--format", "json"])
+
+        payload = json.loads(json_buffer.getvalue())
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertTrue(payload["commands"])
+        self.assertTrue(all(item["status"] == "experimental" for item in payload["commands"]))
+
+        markdown_buffer = io.StringIO()
+        with redirect_stdout(markdown_buffer):
+            self.assertEqual(cli.main(["inventory", "--status", "stable", "--format", "markdown"]), cli.EXIT_OK)
+        self.assertIn("# DevSecOps Command Inventory", markdown_buffer.getvalue())
+        self.assertIn("Generated Artifact Contract", markdown_buffer.getvalue())
+
+    def test_first_success_documented_commands_are_stable(self) -> None:
+        first_success_doc = (ROOT_DIR / "docs/first-successful-pipeline.md").read_text(encoding="utf-8")
+        command_status = {item["command"]: item["status"] for item in cli.command_contracts()}
+        required_stable_commands = [
+            "devsecops config new",
+            "devsecops config validate",
+            "devsecops config diff",
+            "devsecops dry-run",
+            "devsecops render",
+            "devsecops preflight",
+            "devsecops config set",
+            "devsecops terraform bootstrap",
+            "devsecops github setup",
+            "devsecops doctor github",
+            "devsecops doctor branch",
+            "devsecops readiness",
+            "devsecops report",
+            "devsecops github status",
+            "devsecops doctor aws",
+        ]
+
+        for command in required_stable_commands:
+            self.assertIn(command, first_success_doc)
+            self.assertEqual(command_status[command], "stable", command)
+        self.assertNotIn("devsecops compose", first_success_doc)
+        self.assertNotIn("devsecops tui", first_success_doc)
 
     def test_readiness_json_output_contains_checks_and_gaps(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -31,7 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback guard
     tomllib = None  # type: ignore[assignment]
 
 
-VERSION = "0.8.0"
+VERSION = "0.10.0"
 CONFIG_SCHEMA_VERSION = 1
 CONFIG_FILE = ".devsecops-pipeline.toml"
 EXIT_OK = 0
@@ -164,6 +164,7 @@ COMPLETION_COMMANDS = [
     "report",
     "dashboard",
     "explain",
+    "inventory",
     "completion",
 ]
 COMPLETION_SUBCOMMANDS = {
@@ -216,12 +217,648 @@ COMPLETION_OPTIONS = {
     "snapshot show": ["--help", "--format"],
     "snapshot restore": ["--help", "--to", "--last", "--dry-run", "--yes"],
     "readiness": ["--help", "--deep", "--strict", "--format"],
+    "inventory": ["--help", "--format", "--status"],
     "completion": ["--help", "--program"],
+}
+CONTRACT_SCHEMA_VERSION = 1
+COMMAND_CONTRACTS: list[dict[str, Any]] = [
+    {
+        "command": "devsecops menu",
+        "status": "stable",
+        "scope": "interactive",
+        "stable_flags": [],
+        "formats": ["human"],
+        "notes": "Default command when no subcommand is passed.",
+    },
+    {
+        "command": "devsecops config show",
+        "status": "stable",
+        "scope": "configuration",
+        "stable_flags": ["--format"],
+        "formats": ["toml", "json"],
+        "notes": "Prints local source config. JSON is normalized with defaults and migrations applied.",
+    },
+    {
+        "command": "devsecops config new",
+        "status": "stable",
+        "scope": "configuration",
+        "stable_flags": ["--preset", "--force", "--render"],
+        "formats": ["human"],
+        "notes": "Creates clean schema-versioned local source config.",
+    },
+    {
+        "command": "devsecops config validate",
+        "status": "stable",
+        "scope": "configuration",
+        "stable_flags": ["--strict", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "config",
+        "notes": "Validates config before Terraform, GitHub, or AWS operations.",
+    },
+    {
+        "command": "devsecops config diff",
+        "status": "stable",
+        "scope": "configuration",
+        "stable_flags": ["--preset", "--exit-code"],
+        "formats": ["unified-diff"],
+        "notes": "Shows canonical config drift or preset comparison.",
+    },
+    {
+        "command": "devsecops config reset",
+        "status": "stable",
+        "scope": "configuration",
+        "stable_flags": ["--preset", "--render"],
+        "formats": ["human"],
+        "notes": "Creates a snapshot before replacing local source config.",
+    },
+    {
+        "command": "devsecops config set",
+        "status": "stable",
+        "scope": "configuration",
+        "stable_flags": ["<key>", "<value>", "--render"],
+        "formats": ["human"],
+        "notes": "Only documented keys from the config schema are accepted.",
+    },
+    {
+        "command": "devsecops config schema",
+        "status": "stable",
+        "scope": "configuration",
+        "stable_flags": ["--format"],
+        "formats": ["json", "markdown"],
+        "notes": "Prints config fields, migration policy, and rollback expectations.",
+    },
+    {
+        "command": "devsecops dry-run",
+        "status": "stable",
+        "scope": "first-success",
+        "stable_flags": ["--preset", "--image-uri", "--environment"],
+        "formats": ["human"],
+        "notes": "No credentials or file writes required.",
+    },
+    {
+        "command": "devsecops preflight",
+        "status": "stable",
+        "scope": "first-success",
+        "stable_flags": ["--image-uri", "--environment", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "preflight",
+        "notes": "Checks image shape, immutability, region, and repository naming.",
+    },
+    {
+        "command": "devsecops health",
+        "status": "stable",
+        "scope": "operations",
+        "stable_flags": ["--url", "--timeout", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "health",
+        "notes": "Read-only deployed /health validation.",
+    },
+    {
+        "command": "devsecops render",
+        "status": "stable",
+        "scope": "rendering",
+        "stable_flags": ["--dry-run"],
+        "formats": ["human"],
+        "notes": "Writes deterministic CLI-owned artifacts from local source config.",
+    },
+    {
+        "command": "devsecops readiness",
+        "status": "stable",
+        "scope": "diagnostics",
+        "stable_flags": ["--deep", "--strict", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "readiness",
+        "notes": "Scored readiness checks with stable JSON keys for checks, gaps, and breakdown.",
+    },
+    {
+        "command": "devsecops report",
+        "status": "stable",
+        "scope": "reports",
+        "stable_flags": ["--deep", "--format", "--output", "--print"],
+        "formats": ["markdown", "json"],
+        "json_kind": "audit-evidence",
+        "notes": "Writes CLI-owned readiness report or attachable audit evidence.",
+    },
+    {
+        "command": "devsecops dashboard",
+        "status": "stable",
+        "scope": "diagnostics",
+        "stable_flags": ["--watch", "--interval", "--mode"],
+        "formats": ["human"],
+        "notes": "Human dashboard; not intended as a scripting output.",
+    },
+    {
+        "command": "devsecops doctor local",
+        "status": "stable",
+        "scope": "diagnostics",
+        "stable_flags": ["--deep", "--strict", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "doctor-local",
+        "notes": "Local config, files, tools, and render state.",
+    },
+    {
+        "command": "devsecops doctor github",
+        "status": "stable",
+        "scope": "github",
+        "stable_flags": ["--strict", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "github",
+        "notes": "GitHub CLI, repository variables, and secrets.",
+    },
+    {
+        "command": "devsecops doctor aws",
+        "status": "stable",
+        "scope": "aws",
+        "stable_flags": ["--environment", "--strict", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "aws",
+        "notes": "AWS identity, backend, and deployed resources.",
+    },
+    {
+        "command": "devsecops doctor branch",
+        "status": "stable",
+        "scope": "github",
+        "stable_flags": ["--branch", "--strict", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "branch-protection",
+        "notes": "Branch protection and required checks.",
+    },
+    {
+        "command": "devsecops doctor actions",
+        "status": "stable",
+        "scope": "github",
+        "stable_flags": ["--limit", "--strict", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "github-actions-status",
+        "notes": "Recent runs, failed jobs, failed steps, and next actions.",
+    },
+    {
+        "command": "devsecops doctor all",
+        "status": "stable",
+        "scope": "diagnostics",
+        "stable_flags": ["--deep", "--branch", "--environment", "--strict", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "doctor-all",
+        "notes": "Combined local, GitHub, branch, and AWS diagnostics.",
+    },
+    {
+        "command": "devsecops aws outputs",
+        "status": "stable",
+        "scope": "aws",
+        "stable_flags": ["--environment", "--strict", "--format"],
+        "formats": ["human", "json"],
+        "json_kind": "aws-outputs",
+        "notes": "Read-only deployed Lambda, API Gateway, and CloudWatch output inspection.",
+    },
+    {
+        "command": "devsecops aws doctor",
+        "status": "stable",
+        "scope": "aws",
+        "stable_flags": ["--environment", "--strict", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "aws",
+        "notes": "Grouped alias for `devsecops doctor aws`; stable for scripts.",
+    },
+    {
+        "command": "devsecops github setup",
+        "status": "stable",
+        "scope": "github",
+        "stable_flags": ["--write", "--apply", "--deploy-role-arn", "--plan-role-arn", "--snyk-token"],
+        "formats": ["shell", "human"],
+        "notes": "Prints, writes, or applies repository variables/secrets through `gh`.",
+    },
+    {
+        "command": "devsecops github status",
+        "status": "stable",
+        "scope": "github",
+        "stable_flags": ["--limit", "--strict", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "github-actions-status",
+        "notes": "Same output contract as `devsecops doctor actions`.",
+    },
+    {
+        "command": "devsecops github branch",
+        "status": "stable",
+        "scope": "github",
+        "stable_flags": ["--branch", "--strict", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "branch-protection",
+        "notes": "Same output contract as `devsecops doctor branch`.",
+    },
+    {
+        "command": "devsecops github doctor",
+        "status": "stable",
+        "scope": "github",
+        "stable_flags": ["--strict", "--format"],
+        "formats": ["human", "compact", "json"],
+        "json_kind": "github",
+        "notes": "Same output contract as `devsecops doctor github`.",
+    },
+    {
+        "command": "devsecops terraform plan",
+        "status": "stable",
+        "scope": "terraform",
+        "stable_flags": ["<environment>", "--no-init", "--create-workspace"],
+        "formats": ["human", "terraform-output"],
+        "notes": "Delegates to Terraform without hiding Terraform's plan output.",
+    },
+    {
+        "command": "devsecops terraform bootstrap",
+        "status": "stable",
+        "scope": "terraform",
+        "stable_flags": ["--apply"],
+        "formats": ["human", "terraform-output"],
+        "notes": "Plans by default; mutates AWS only with `--apply`.",
+    },
+    {
+        "command": "devsecops snapshot list",
+        "status": "stable",
+        "scope": "snapshots",
+        "stable_flags": ["--format"],
+        "formats": ["human", "json"],
+        "json_kind": "snapshots",
+        "notes": "Lists local CLI-owned file snapshots.",
+    },
+    {
+        "command": "devsecops snapshot show",
+        "status": "stable",
+        "scope": "snapshots",
+        "stable_flags": ["<selection>", "--format"],
+        "formats": ["human", "json"],
+        "json_kind": "snapshot",
+        "notes": "Shows snapshot manifest and changes since capture.",
+    },
+    {
+        "command": "devsecops snapshot restore",
+        "status": "stable",
+        "scope": "snapshots",
+        "stable_flags": ["--to", "--last", "--dry-run", "--yes"],
+        "formats": ["human"],
+        "notes": "Restores only local CLI-owned files and creates a safety snapshot before applying.",
+    },
+    {
+        "command": "devsecops preset list",
+        "status": "stable",
+        "scope": "configuration",
+        "stable_flags": [],
+        "formats": ["human"],
+        "notes": "Lists policy presets.",
+    },
+    {
+        "command": "devsecops preset show",
+        "status": "stable",
+        "scope": "configuration",
+        "stable_flags": ["<name>"],
+        "formats": ["human"],
+        "notes": "Shows a preset summary.",
+    },
+    {
+        "command": "devsecops preset apply",
+        "status": "stable",
+        "scope": "configuration",
+        "stable_flags": ["<name>", "--render"],
+        "formats": ["human"],
+        "notes": "Applies a preset while preserving project, region, image, admin role, and backend identity values.",
+    },
+    {
+        "command": "devsecops completion",
+        "status": "stable",
+        "scope": "completions",
+        "stable_flags": ["<shell>", "--program"],
+        "formats": ["bash", "zsh", "fish"],
+        "notes": "Dependency-free completion scripts for common shells.",
+    },
+    {
+        "command": "devsecops inventory",
+        "status": "stable",
+        "scope": "stability",
+        "stable_flags": ["--format", "--status"],
+        "formats": ["human", "markdown", "json"],
+        "json_kind": "command-inventory",
+        "notes": "Machine-readable stability, deprecation, JSON, config, and generated-artifact contract.",
+    },
+    {
+        "command": "devsecops explain",
+        "status": "support",
+        "scope": "inspection",
+        "stable_flags": ["<topic>"],
+        "formats": ["human"],
+        "notes": "Human explanation text may be refined across minor releases.",
+    },
+    {
+        "command": "devsecops controls",
+        "status": "support",
+        "scope": "inspection",
+        "stable_flags": ["--format"],
+        "formats": ["human", "json"],
+        "json_kind": "control-catalog",
+        "notes": "Control IDs are stable; prose can be improved.",
+    },
+    {
+        "command": "devsecops envs",
+        "status": "support",
+        "scope": "inspection",
+        "stable_flags": [],
+        "formats": ["human"],
+        "notes": "Human inspection table.",
+    },
+    {
+        "command": "devsecops architecture",
+        "status": "support",
+        "scope": "inspection",
+        "stable_flags": [],
+        "formats": ["human"],
+        "notes": "Human architecture tree.",
+    },
+    {
+        "command": "devsecops compose",
+        "status": "experimental",
+        "scope": "configuration",
+        "stable_flags": [],
+        "formats": ["human"],
+        "notes": "Interactive flow may change before v1.0; do not use it in scripts.",
+    },
+    {
+        "command": "devsecops tui",
+        "status": "experimental",
+        "scope": "ui",
+        "stable_flags": [],
+        "formats": ["human"],
+        "notes": "Optional Rich/Textual UI bridge; dependency and layout may change.",
+    },
+    {
+        "command": "devsecops init",
+        "status": "alias",
+        "scope": "configuration",
+        "stable_flags": ["--force", "--defaults"],
+        "alias_for": "devsecops config new",
+        "formats": ["human"],
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops validate-config",
+        "status": "alias",
+        "scope": "configuration",
+        "stable_flags": ["--strict", "--format"],
+        "alias_for": "devsecops config validate",
+        "formats": ["human", "compact", "json"],
+        "json_kind": "config",
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops set",
+        "status": "alias",
+        "scope": "configuration",
+        "stable_flags": ["<key>", "<value>", "--render"],
+        "alias_for": "devsecops config set",
+        "formats": ["human"],
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops github-setup",
+        "status": "alias",
+        "scope": "github",
+        "stable_flags": ["--write", "--apply", "--deploy-role-arn", "--plan-role-arn", "--snyk-token"],
+        "alias_for": "devsecops github setup",
+        "formats": ["shell", "human"],
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops gh-setup",
+        "status": "alias",
+        "scope": "github",
+        "stable_flags": ["--write", "--apply", "--deploy-role-arn", "--plan-role-arn", "--snyk-token"],
+        "alias_for": "devsecops github setup",
+        "formats": ["shell", "human"],
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops gh-doctor",
+        "status": "alias",
+        "scope": "github",
+        "stable_flags": ["--strict", "--format"],
+        "alias_for": "devsecops doctor github",
+        "formats": ["human", "compact", "json"],
+        "json_kind": "github",
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops aws-doctor",
+        "status": "alias",
+        "scope": "aws",
+        "stable_flags": ["--environment", "--strict", "--format"],
+        "alias_for": "devsecops doctor aws",
+        "formats": ["human", "compact", "json"],
+        "json_kind": "aws",
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops actions-status",
+        "status": "alias",
+        "scope": "github",
+        "stable_flags": ["--limit", "--strict", "--format"],
+        "alias_for": "devsecops doctor actions",
+        "formats": ["human", "compact", "json"],
+        "json_kind": "github-actions-status",
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops gh-status",
+        "status": "alias",
+        "scope": "github",
+        "stable_flags": ["--limit", "--strict", "--format"],
+        "alias_for": "devsecops doctor actions",
+        "formats": ["human", "compact", "json"],
+        "json_kind": "github-actions-status",
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops branch-doctor",
+        "status": "alias",
+        "scope": "github",
+        "stable_flags": ["--branch", "--strict", "--format"],
+        "alias_for": "devsecops doctor branch",
+        "formats": ["human", "compact", "json"],
+        "json_kind": "branch-protection",
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops plan",
+        "status": "alias",
+        "scope": "terraform",
+        "stable_flags": ["<environment>", "--no-init", "--create-workspace"],
+        "alias_for": "devsecops terraform plan",
+        "formats": ["human", "terraform-output"],
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops bootstrap",
+        "status": "alias",
+        "scope": "terraform",
+        "stable_flags": ["--apply"],
+        "alias_for": "devsecops terraform bootstrap",
+        "formats": ["human", "terraform-output"],
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops snapshots",
+        "status": "alias",
+        "scope": "snapshots",
+        "stable_flags": ["--show"],
+        "alias_for": "devsecops snapshot list/show",
+        "formats": ["human"],
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+    {
+        "command": "devsecops rollback",
+        "status": "alias",
+        "scope": "snapshots",
+        "stable_flags": ["--to", "--last", "--dry-run", "--yes"],
+        "alias_for": "devsecops snapshot restore",
+        "formats": ["human"],
+        "notes": "Compatibility alias retained through at least v1.0.",
+    },
+]
+DEPRECATION_POLICY = {
+    "aliases": "Aliases remain callable through at least v1.0. New scripts should use the documented grouped command.",
+    "experimental_commands": "Experimental commands are excluded from first-success docs and may change or move in any 0.x minor release.",
+    "output_formats": "JSON outputs are additive within a schema_version; fields may be added, but existing kind names and documented keys are not renamed without deprecation.",
+    "config_fields": "Config fields require schema-versioned migration notes, tests, and upgrade-guide coverage before shipping.",
+}
+JSON_OUTPUT_CONTRACTS = [
+    {
+        "kind": "config",
+        "commands": ["devsecops config validate", "devsecops validate-config"],
+        "stable_keys": ["kind", "schema_version", "score", "overall_breakdown_score", "breakdown", "gaps", "checks"],
+    },
+    {
+        "kind": "readiness",
+        "commands": ["devsecops readiness"],
+        "stable_keys": ["kind", "schema_version", "score", "overall_breakdown_score", "breakdown", "gaps", "checks", "context"],
+    },
+    {
+        "kind": "preflight",
+        "commands": ["devsecops preflight"],
+        "stable_keys": ["kind", "schema_version", "score", "overall_breakdown_score", "breakdown", "gaps", "checks", "context"],
+    },
+    {
+        "kind": "health",
+        "commands": ["devsecops health"],
+        "stable_keys": ["kind", "schema_version", "score", "overall_breakdown_score", "breakdown", "gaps", "checks", "context"],
+    },
+    {
+        "kind": "github-actions-status",
+        "commands": ["devsecops github status", "devsecops doctor actions"],
+        "stable_keys": ["kind", "schema_version", "error", "runs", "failed_jobs", "failed_steps", "next_actions"],
+    },
+    {
+        "kind": "aws-outputs",
+        "commands": ["devsecops aws outputs"],
+        "stable_keys": ["kind", "schema_version", "environment", "outputs", "checks", "next_actions"],
+    },
+    {
+        "kind": "snapshots",
+        "commands": ["devsecops snapshot list"],
+        "stable_keys": ["kind", "schema_version", "snapshots"],
+    },
+    {
+        "kind": "snapshot",
+        "commands": ["devsecops snapshot show"],
+        "stable_keys": ["kind", "schema_version", "snapshot"],
+    },
+    {
+        "kind": "audit-evidence",
+        "commands": ["devsecops report --format json"],
+        "stable_keys": ["kind", "schema_version", "cli_version", "project", "readiness", "config_validation", "controls"],
+    },
+    {
+        "kind": "control-catalog",
+        "commands": ["devsecops controls --format json"],
+        "stable_keys": ["kind", "schema_version", "controls"],
+    },
+    {
+        "kind": "command-inventory",
+        "commands": ["devsecops inventory --format json"],
+        "stable_keys": ["kind", "schema_version", "commands", "deprecation_policy", "json_outputs", "generated_artifacts"],
+    },
+]
+GENERATED_ARTIFACT_CONTRACTS = [
+    {
+        "path": str(GENERATED_TFVARS),
+        "producer": "devsecops render",
+        "compatibility": "stable",
+        "rerender_required_when": ["config values change", "config schema migration changes normalized values", "Terraform variable contract changes"],
+        "expected_diffs": ["HCL assignment value changes", "environment_config map changes", "CLI-owned header updates only on generator policy changes"],
+    },
+    {
+        "path": str(DIST_DIR / "backend.tf"),
+        "producer": "devsecops render",
+        "compatibility": "stable-template",
+        "rerender_required_when": ["backend.* config values change", "Terraform backend template policy changes"],
+        "expected_diffs": ["S3 backend attribute value changes"],
+    },
+    {
+        "path": str(DIST_DIR / "github-variables.env"),
+        "producer": "devsecops render",
+        "compatibility": "stable",
+        "rerender_required_when": ["GitHub variable source config changes"],
+        "expected_diffs": ["PROJECT_NAME, LAMBDA_IMAGE_URI, ENABLE_* or PROD_APPROVAL_ENVIRONMENT value changes"],
+    },
+    {
+        "path": str(DIST_DIR / "github-setup.sh"),
+        "producer": "devsecops render or devsecops github setup --write",
+        "compatibility": "stable-helper",
+        "rerender_required_when": ["GitHub variable source config changes", "required secret contract changes"],
+        "expected_diffs": ["gh variable commands", "optional versus required SNYK_TOKEN command", "CLI-owned header updates"],
+    },
+    {
+        "path": str(DIST_DIR / "setup-checklist.md"),
+        "producer": "devsecops render",
+        "compatibility": "stable-helper",
+        "rerender_required_when": ["GitHub, backend, or branch-protection checklist contract changes"],
+        "expected_diffs": ["checklist item values or required item additions"],
+    },
+    {
+        "path": str(DIST_DIR / "readiness-report.md"),
+        "producer": "devsecops report",
+        "compatibility": "stable-report",
+        "rerender_required_when": ["readiness checks change", "config values change", "environment state changes"],
+        "expected_diffs": ["Generated timestamp", "score/check/action rows", "control or environment rows"],
+    },
+    {
+        "path": str(AUDIT_REPORT),
+        "producer": "devsecops report --format json",
+        "compatibility": "stable-json",
+        "rerender_required_when": ["audit evidence, readiness, config, or control state changes"],
+        "expected_diffs": ["generated_at timestamp", "readiness/config/control payload changes"],
+    },
+]
+CONFIG_MIGRATION_CONTRACT = {
+    "current_schema_version": CONFIG_SCHEMA_VERSION,
+    "legacy_without_schema_version": "Treat as schema_version 1 and normalize with current defaults.",
+    "future_schema_version": "Refuse to load or render; upgrade the CLI before changing CLI-owned files.",
+    "required_for_schema_change": [
+        "increment CONFIG_SCHEMA_VERSION",
+        "add deterministic migrate_config step",
+        "update config_schema and config_schema_markdown",
+        "add legacy-to-current and rollback expectation tests",
+        "document re-render expectations in generated-artifacts and upgrade guide",
+    ],
+    "rollback_expectations": [
+        "migration changes only local source config normalization",
+        "render/report/github setup create snapshots before overwriting CLI-owned files",
+        "snapshot restore affects only .devsecops-pipeline.toml, terraform/generated.auto.tfvars, dist/devsecops/* reports/helpers, and audit report",
+        "snapshot restore does not mutate AWS, Terraform state, GitHub settings, or deployed Lambda images",
+    ],
 }
 
 
 class InputCancelled(Exception):
     """Raised when an interactive menu prompt is cancelled by the user."""
+
+
+class ConfigMigrationError(Exception):
+    """Raised when the local config cannot be safely migrated by this CLI."""
 
 
 @dataclass
@@ -708,6 +1345,11 @@ def migrate_config(raw_cfg: dict[str, Any]) -> dict[str, Any]:
     version = cfg.get("schema_version", 1)
     if not isinstance(version, int):
         return cfg
+    if version > CONFIG_SCHEMA_VERSION:
+        raise ConfigMigrationError(
+            f"{CONFIG_FILE} uses schema_version = {version}, but this CLI supports schema_version = {CONFIG_SCHEMA_VERSION}. "
+            "Upgrade the devsecops CLI before rendering or changing CLI-owned files."
+        )
     while version < CONFIG_SCHEMA_VERSION:
         # Future migrations should update cfg in place and increment version.
         version += 1
@@ -802,6 +1444,7 @@ def config_schema() -> dict[str, Any]:
         "config_file": CONFIG_FILE,
         "secrets_allowed": False,
         "presets": PRESET_ORDER,
+        "migration": CONFIG_MIGRATION_CONTRACT,
         "fields": {
             "schema_version": {"type": "integer", "current": CONFIG_SCHEMA_VERSION},
             "project_name": {"type": "string", "pattern": PROJECT_NAME_RE.pattern},
@@ -853,6 +1496,11 @@ def config_schema_markdown() -> str:
             f"Current schema version: `{CONFIG_SCHEMA_VERSION}`",
             "Secrets are not allowed in `.devsecops-pipeline.toml`.",
             markdown_table(["Field", "Type", "Notes"], rows),
+            "## Migration Contract",
+            "Legacy files without `schema_version` are treated as schema version `1` and migrated to the current version.",
+            "Configs with a future `schema_version` are refused until the CLI is upgraded.",
+            "Schema-changing releases must update `migrate_config`, tests, release notes, generated-artifact compatibility notes, and this schema output before shipping.",
+            "Snapshot restore can recover only local CLI-owned files; it never mutates AWS, Terraform state, GitHub settings, or deployed Lambda images.",
             "",
         ]
     )
@@ -3114,6 +3762,7 @@ def readiness_gap_dicts(checks: list[Check]) -> list[dict[str, str]]:
 def checks_payload(kind: str, checks: list[Check], context: dict[str, Any] | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "kind": kind,
+        "schema_version": CONTRACT_SCHEMA_VERSION,
         "score": readiness_score(checks),
         "overall_breakdown_score": overall_breakdown_score(checks),
         "breakdown": readiness_breakdown_dicts(checks),
@@ -3641,7 +4290,13 @@ def control_rows(cfg: dict[str, Any]) -> list[list[str]]:
 def cmd_controls(args: argparse.Namespace) -> int:
     cfg = load_config(repo_root())
     if getattr(args, "format", "human") == "json":
-        emit_json({"kind": "control-catalog", "controls": [control_to_dict(control, cfg) for control in control_catalog()]})
+        emit_json(
+            {
+                "kind": "control-catalog",
+                "schema_version": CONTRACT_SCHEMA_VERSION,
+                "controls": [control_to_dict(control, cfg) for control in control_catalog()],
+            }
+        )
     else:
         draw_table(["Control", "State", "CLI", "Generated Behavior"], control_rows(cfg), title="Pipeline Controls")
     return 0
@@ -3668,6 +4323,108 @@ def architecture_lines() -> list[str]:
 def cmd_architecture(args: argparse.Namespace) -> int:
     draw_box("Architecture", architecture_lines())
     return 0
+
+
+def command_contracts(status: str = "all") -> list[dict[str, Any]]:
+    if status == "all":
+        return [dict(item) for item in COMMAND_CONTRACTS]
+    return [dict(item) for item in COMMAND_CONTRACTS if item["status"] == status]
+
+
+def command_contract_rows(status: str = "all") -> list[list[str]]:
+    return [
+        [
+            str(item["command"]),
+            str(item["status"]),
+            str(item["scope"]),
+            ", ".join(str(flag) for flag in item.get("stable_flags", [])) or "-",
+            str(item.get("alias_for") or item.get("json_kind") or ""),
+        ]
+        for item in command_contracts(status)
+    ]
+
+
+def command_inventory_markdown(status: str = "all") -> str:
+    return "\n\n".join(
+        [
+            "# DevSecOps Command Inventory",
+            f"Contract schema version: `{CONTRACT_SCHEMA_VERSION}`",
+            f"Status filter: `{status}`",
+            markdown_table(["Command", "Status", "Scope", "Stable Flags", "Alias/JSON"], command_contract_rows(status)),
+            "## Deprecation Policy",
+            markdown_table(["Surface", "Policy"], [[key, value] for key, value in DEPRECATION_POLICY.items()]),
+            "## JSON Output Contract",
+            markdown_table(
+                ["Kind", "Commands", "Stable Keys"],
+                [
+                    [
+                        item["kind"],
+                        ", ".join(item["commands"]),
+                        ", ".join(item["stable_keys"]),
+                    ]
+                    for item in JSON_OUTPUT_CONTRACTS
+                ],
+            ),
+            "## Generated Artifact Contract",
+            markdown_table(
+                ["Path", "Producer", "Compatibility", "Re-render When"],
+                [
+                    [
+                        item["path"],
+                        item["producer"],
+                        item["compatibility"],
+                        "; ".join(item["rerender_required_when"]),
+                    ]
+                    for item in GENERATED_ARTIFACT_CONTRACTS
+                ],
+            ),
+            "",
+        ]
+    )
+
+
+def inventory_payload(status: str = "all") -> dict[str, Any]:
+    return {
+        "kind": "command-inventory",
+        "schema_version": CONTRACT_SCHEMA_VERSION,
+        "cli_version": VERSION,
+        "status_filter": status,
+        "commands": command_contracts(status),
+        "deprecation_policy": DEPRECATION_POLICY,
+        "json_outputs": JSON_OUTPUT_CONTRACTS,
+        "generated_artifacts": GENERATED_ARTIFACT_CONTRACTS,
+        "config_migration": CONFIG_MIGRATION_CONTRACT,
+        "exit_codes": {
+            "0": "ok",
+            "1": "validation failed or invalid local selection",
+            "2": "required external tool is missing",
+            "3": "external authentication is missing or invalid",
+            "70": "unexpected runtime error",
+            "130": "interrupted",
+        },
+    }
+
+
+def cmd_inventory(args: argparse.Namespace) -> int:
+    status = getattr(args, "status", "all")
+    output_format = getattr(args, "format", "human")
+    if output_format == "json":
+        emit_json(inventory_payload(status))
+    elif output_format == "markdown":
+        print(command_inventory_markdown(status))
+    else:
+        draw_table(["Command", "Status", "Scope", "Stable Flags", "Alias/JSON"], command_contract_rows(status), title="Command Inventory")
+        print()
+        draw_box(
+            "Stability Contract",
+            [
+                "Stable commands and flags are safe for scripts within normal semver expectations.",
+                "Aliases remain callable through at least v1.0, but new scripts should use grouped commands.",
+                "Experimental commands are excluded from first-success docs and may change in 0.x releases.",
+                "Use `devsecops inventory --format json` for a machine-readable contract.",
+            ],
+        )
+    return EXIT_OK
 
 
 def render_dashboard(root: Path, mode: str = "full", clear: bool = False) -> None:
@@ -4012,6 +4769,7 @@ def cmd_gh_status(args: argparse.Namespace) -> int:
             emit_json(
                 {
                     "kind": "github-actions-status",
+                    "schema_version": CONTRACT_SCHEMA_VERSION,
                     "error": status.error,
                     "runs": [],
                     "failed_jobs": [],
@@ -4032,6 +4790,8 @@ def cmd_gh_status(args: argparse.Namespace) -> int:
         emit_json(
             {
                 "kind": "github-actions-status",
+                "schema_version": CONTRACT_SCHEMA_VERSION,
+                "error": None,
                 "runs": status.runs,
                 "failed_jobs": status.failed_jobs,
                 "failed_steps": status.failed_steps,
@@ -4384,6 +5144,7 @@ def cmd_aws_outputs(args: argparse.Namespace) -> int:
         emit_json(
             {
                 "kind": "aws-outputs",
+                "schema_version": CONTRACT_SCHEMA_VERSION,
                 "environment": getattr(args, "environment", "prod"),
                 "outputs": outputs,
                 "checks": [check_to_dict(check) for check in checks],
@@ -4449,7 +5210,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     if command == "list":
         snapshots = list_snapshots(root)
         if output_format == "json":
-            emit_json({"kind": "snapshots", "snapshots": snapshots})
+            emit_json({"kind": "snapshots", "schema_version": CONTRACT_SCHEMA_VERSION, "snapshots": snapshots})
         elif snapshots:
             draw_table(["#", "Snapshot", "Created", "Operation"], snapshot_rows(snapshots), title="Snapshots")
         else:
@@ -4464,7 +5225,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         if output_format == "json":
             payload = dict(snapshot)
             payload["changes"] = snapshot_changes(root, snapshot)
-            emit_json({"kind": "snapshot", "snapshot": payload})
+            emit_json({"kind": "snapshot", "schema_version": CONTRACT_SCHEMA_VERSION, "snapshot": payload})
         else:
             print_snapshot_detail(root, snapshot)
         return EXIT_OK
@@ -5175,11 +5936,20 @@ def build_parser() -> argparse.ArgumentParser:
               README.md
               docs/command-inventory.md
               docs/generated-artifacts.md
+              devsecops inventory --format json
 
             Legacy aliases still work:
-              init, set, validate-config, preset, compose, snapshots, rollback,
+              init, set, validate-config, snapshots, rollback,
               github-setup, gh-doctor, aws-doctor, actions-status, branch-doctor,
-              plan, bootstrap, envs, controls, architecture, tui
+              plan, bootstrap
+
+            Additional documented hidden commands:
+              preset, envs, controls, architecture, compose (experimental),
+              tui (experimental)
+
+            Stability contract:
+              Stable command flags and JSON kinds are listed by `devsecops inventory`.
+              Experimental commands are excluded from the first-success workflow.
 
             Stable exit codes:
               0 ok, 1 validation failed, 2 missing external tool,
@@ -5190,7 +5960,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     subparsers = parser.add_subparsers(
         dest="command",
-        metavar="{menu,config,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,completion}",
+        metavar="{menu,config,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,inventory,completion}",
     )
     parser.set_defaults(func=cmd_menu)
 
@@ -5207,6 +5977,11 @@ def build_parser() -> argparse.ArgumentParser:
     completion_parser.add_argument("shell", choices=COMPLETION_SHELLS, help="Shell completion format to print.")
     completion_parser.add_argument("--program", default="devsecops", help="Program name to complete.")
     completion_parser.set_defaults(func=cmd_completion)
+
+    inventory_parser = subparsers.add_parser("inventory", help="Print the stable command, JSON, migration, and artifact contract.")
+    inventory_parser.add_argument("--format", choices=["human", "markdown", "json"], default="human", help="Output mode.")
+    inventory_parser.add_argument("--status", choices=["all", "stable", "alias", "experimental", "support"], default="all", help="Command status filter.")
+    inventory_parser.set_defaults(func=cmd_inventory)
 
     tui_parser = subparsers.add_parser("tui", help=argparse.SUPPRESS)
     tui_parser.set_defaults(func=cmd_tui)
@@ -5545,6 +6320,9 @@ def main(argv: list[str] | None = None) -> int:
         print()
         print(warn("Interrupted."))
         return EXIT_INTERRUPTED
+    except ConfigMigrationError as exc:
+        print(fail("Config migration error: ") + str(exc))
+        return EXIT_VALIDATION_FAILED
     except Exception as exc:  # pragma: no cover - defensive CLI boundary
         print(fail("Unexpected error: ") + str(exc))
         return EXIT_UNEXPECTED_ERROR

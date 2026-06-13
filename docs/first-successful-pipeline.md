@@ -4,6 +4,9 @@ This guide gives a measurable path from a clean install to one production
 workflow dispatch. The CLI remains the product surface; Terraform, GitHub
 Actions, AWS, and scanners stay visible execution layers.
 
+Every `devsecops` command used in this guide is part of the stable command
+contract in [Stability contract](stability-contract.md).
+
 ## 1. Install And Run A No-Credentials Dry Run
 
 Install the latest published CLI release with the commands in
@@ -186,3 +189,6 @@ devsecops doctor aws --environment prod
 
 Expected deployed resources include the Lambda function, API Gateway, log
 group, and configured ECR image.
+
+For a release-ready evidence bundle after this succeeds, follow
+[Production deployment evidence](production-deployment-evidence.md).

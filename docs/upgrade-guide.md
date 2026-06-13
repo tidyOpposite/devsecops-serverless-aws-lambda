@@ -4,13 +4,20 @@ This guide documents upgrade behavior for CLI releases and config schema
 changes. It must be updated before a release ships any change to
 `.devsecops-pipeline.toml` semantics.
 
+The broader stability and deprecation policy is documented in
+[Stability contract](stability-contract.md).
+
 ## Current Schema
 
-`v0.8.0` uses config schema version `1`.
+`v0.10.0` uses config schema version `1`.
 
-There is no config schema migration in `v0.8.0`. Existing
+There is no config schema migration in `v0.10.0`. Existing
 `.devsecops-pipeline.toml` files with `schema_version = 1`, or legacy files
 without the field, continue to normalize to schema version `1`.
+
+If the local config has a future `schema_version` greater than this CLI
+supports, the CLI refuses to load it before rendering or changing CLI-owned
+files. Upgrade the CLI first.
 
 ## Standard Upgrade Flow
 
@@ -55,6 +62,10 @@ before it ships:
 * update `migrate_config` with deterministic migration behavior;
 * update `config_schema` and `config_schema_markdown`;
 * add tests for legacy config loading and the migrated output;
+* add tests that future schema versions fail closed before generated files are
+  written;
+* add tests that generated artifact paths still match the compatibility
+  contract;
 * add changelog and release-note upgrade sections;
 * document whether generated files must be re-rendered;
 * document rollback expectations for CLI-owned files.
@@ -69,6 +80,8 @@ The CLI migration boundary is local source config only:
 * Local snapshot restore can recover CLI-owned files from previous local states.
 * Config migration does not mutate AWS resources, Terraform state, GitHub
   variables, GitHub secrets, or deployed Lambda images.
+* A CLI that does not understand a future schema version must stop before
+  writing generated artifacts.
 
 Expected release-note format for schema changes:
 
