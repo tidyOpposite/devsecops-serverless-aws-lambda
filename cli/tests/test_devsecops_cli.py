@@ -445,7 +445,7 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("Stability Contract Gate", release_checklist)
         self.assertIn("[Stability contract](docs/stability-contract.md)", readme)
         self.assertIn("Milestone 9: Stability Contract And Migration Readiness", roadmap)
-        self.assertIn("Status: implemented in `v0.10.0`.", roadmap)
+        self.assertIn("Status: implemented in `v0.11.0`.", roadmap)
 
     def test_release_candidate_docs_cover_milestone_ten_contract(self) -> None:
         rc_doc = (ROOT_DIR / "docs/v1.0.0-release-candidate-checklist.md").read_text(encoding="utf-8")

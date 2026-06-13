@@ -157,7 +157,7 @@ publishing the release.
 
 ## 8. Stability Contract Gate
 
-For `v0.10.0` and later releases, verify the public contract before publishing:
+For `v0.11.0` and later releases, verify the public contract before publishing:
 
 ```bash
 devsecops inventory --format json

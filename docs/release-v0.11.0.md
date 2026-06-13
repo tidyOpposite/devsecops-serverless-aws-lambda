@@ -2,13 +2,27 @@
 
 Release date: 2026-06-13
 
-Milestone 10 turns the final pre-1.0 hardening work into an evidence-driven
-release-candidate path. This is not the `v1.0.0` stable tag; it gives users
+`v0.11.0` is the first published release after `v0.8.0`. It combines the
+production evidence, stability contract, and final pre-1.0 hardening work into
+one release-candidate path. This is not the `v1.0.0` stable tag; it gives users
 clearer first-success guidance, quieter diagnostics, and a concrete evidence
 map for the eventual stable release.
 
 ## Highlights
 
+* Added the [Production deployment evidence](production-deployment-evidence.md)
+  workflow so release records can capture setup, workflow, Terraform, AWS,
+  health, log, image, and rollback-readiness evidence.
+* Added the [Stability contract](stability-contract.md) with stable command,
+  flag, JSON output, config migration, generated artifact, and deprecation
+  expectations.
+* Promoted Terraform helper commands to the stable command contract so the
+  documented first-success workflow no longer depends on experimental behavior.
+* Added fail-closed config loading for future schema versions. A CLI that does
+  not understand a future `.devsecops-pipeline.toml` schema refuses to render
+  or overwrite CLI-owned files.
+* Added generated artifact compatibility notes that explain when re-rendering
+  is required and what diffs users should expect.
 * Added the [v1.0.0 release candidate checklist](v1.0.0-release-candidate-checklist.md)
   with Version 1.0 criteria mapped to commands, docs, tests, and release
   artifacts.

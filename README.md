@@ -610,7 +610,6 @@ devsecops health
 * [Known limitations](docs/known-limitations.md)
 * [Changelog](CHANGELOG.md)
 * [v0.11.0 release notes](docs/release-v0.11.0.md)
-* [v0.10.0 release notes](docs/release-v0.10.0.md)
 * [v0.8.0 release notes](docs/release-v0.8.0.md)
 * [v0.7.0 release notes](docs/release-v0.7.0.md)
 * [v0.6.1 release notes](docs/release-v0.6.1.md)

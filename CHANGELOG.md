@@ -11,6 +11,12 @@ No changes yet.
 
 ### Added
 
+* Production deployment evidence guide for Milestone 8, including evidence
+  bundle layout, production workflow dispatch capture, Terraform/AWS/health
+  proof, rollback-readiness checks, and real-account lessons to record.
+* Stability contract for Milestone 9, including machine-readable command
+  inventory, deprecation policy, JSON output contract, config migration
+  expectations, and generated artifact compatibility notes.
 * `v1.0.0` release-candidate checklist and evidence map for Milestone 10
   hardening.
 * Known-limitations register that separates accepted limitations from blockers
@@ -20,30 +26,16 @@ No changes yet.
 
 ### Changed
 
+* Release checklist now includes production evidence, stability contract, and
+  release-candidate hardening gates.
+* Terraform helper commands are part of the stable command contract for the
+  documented first-success workflow.
 * Python package metadata and install docs now align with the supported
   Python 3.11, 3.12, and 3.13 compatibility matrix.
 * Readiness and strict config validation now make production blockers and
   release-evidence readiness clearer.
 * Deep diagnostics now suppress cascaded Terraform/AWS warnings when root tools
   or project files are missing.
-
-## v0.10.0 - 2026-06-13
-
-### Added
-
-* Production deployment evidence guide for Milestone 8, including evidence
-  bundle layout, production workflow dispatch capture, Terraform/AWS/health
-  proof, rollback-readiness checks, and real-account lessons to record.
-* Stability contract for Milestone 9, including machine-readable command
-  inventory, deprecation policy, JSON output contract, config migration
-  expectations, and generated artifact compatibility notes.
-
-### Changed
-
-* Release checklist now includes a production evidence gate for releases that
-  claim production proof.
-* Terraform helper commands are part of the stable command contract for the
-  documented first-success workflow.
 
 ## v0.8.0 - 2026-06-12
 

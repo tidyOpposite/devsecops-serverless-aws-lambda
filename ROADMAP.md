@@ -323,8 +323,8 @@ Acceptance criteria:
 
 ## Milestone 9: Stability Contract And Migration Readiness
 
-Target release: `v0.10.0`.
-Status: implemented in `v0.10.0`.
+Target release: `v0.11.0`.
+Status: implemented in `v0.11.0`.
 
 Problem: before `v1.0.0`, the public CLI, config schema, generated artifacts,
 and compatibility promises need an explicit stability contract so users know
