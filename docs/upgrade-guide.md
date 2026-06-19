@@ -9,11 +9,12 @@ The broader stability and deprecation policy is documented in
 
 ## Current Schema
 
-`v0.11.0` uses config schema version `1`.
+`v0.12.0` uses config schema version `1`.
 
-There is no config schema migration in `v0.11.0`. Existing
+There is no config schema migration in `v0.12.0`. Existing
 `.devsecops-pipeline.toml` files with `schema_version = 1`, or legacy files
 without the field, continue to normalize to schema version `1`.
+The additive `api_authorization_type` field defaults to `AWS_IAM` when missing.
 
 If the local config has a future `schema_version` greater than this CLI
 supports, the CLI refuses to load it before rendering or changing CLI-owned

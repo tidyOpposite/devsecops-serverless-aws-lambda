@@ -8,6 +8,17 @@ variable "api_throttling_rate_limit" {
   type        = number
 }
 
+variable "authorization_type" {
+  description = "API Gateway HTTP route authorization type."
+  type        = string
+  default     = "AWS_IAM"
+
+  validation {
+    condition     = contains(["AWS_IAM", "NONE"], var.authorization_type)
+    error_message = "authorization_type must be AWS_IAM or NONE."
+  }
+}
+
 variable "cors_allowed_origins" {
   description = "Allowed CORS origins."
   type        = list(string)

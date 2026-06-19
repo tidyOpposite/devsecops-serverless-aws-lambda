@@ -1,6 +1,6 @@
 # Stability Contract
 
-Target release: `v0.11.0`.
+Target release: `v0.12.0`.
 
 This contract explains which `devsecops` surfaces are stable enough to script
 against before `v1.0.0`, which surfaces are compatibility aliases or
@@ -28,7 +28,7 @@ devsecops inventory --status stable --format markdown
 | --- | --- |
 | First success | `devsecops next --format`, `devsecops start --preset --render --yes`, `devsecops config new --preset --force --render`, `devsecops config validate --strict --format`, `devsecops config diff --preset --exit-code`, `devsecops dry-run --preset --image-uri --environment`, `devsecops preflight --image-uri --environment --format` |
 | Diagnostics | `devsecops readiness --deep --strict --format`, `devsecops doctor local --deep --strict --format`, `devsecops doctor github --strict --format`, `devsecops doctor aws --environment --strict --format`, `devsecops doctor branch --branch --strict --format`, `devsecops doctor actions --limit --strict --format`, `devsecops doctor all --deep --branch --environment --strict --format` |
-| Rendering and reports | `devsecops render --dry-run`, `devsecops report --deep --format --output --print`, `devsecops evidence collect --rc --output` |
+| Rendering and reports | `devsecops render --dry-run`, `devsecops report --deep --format --output --print`, `devsecops evidence collect --rc --output`, `devsecops criteria --format --evidence-dir --strict` |
 | GitHub setup | `devsecops github setup --write --apply --deploy-role-arn --plan-role-arn --snyk-token`, `devsecops github status --limit --strict --format`, `devsecops github branch --branch --strict --format`, `devsecops github doctor --strict --format` |
 | Terraform helpers | `devsecops terraform plan <environment> --no-init --create-workspace`, `devsecops terraform bootstrap --apply` |
 | Snapshots | `devsecops snapshot list --format`, `devsecops snapshot show <selection> --format`, `devsecops snapshot restore --to --last --dry-run --yes` |
@@ -57,6 +57,7 @@ without a deprecation window.
 | `audit-evidence` | `devsecops report --format json` | `kind`, `schema_version`, `cli_version`, `project`, `readiness`, `config_validation`, `controls` |
 | `next-action` | `devsecops next --format json` | `kind`, `schema_version`, `context`, `action`, `command`, `detail`, `docs` |
 | `release-candidate-evidence` | `devsecops evidence collect --rc` | `kind`, `schema_version`, `generated_at`, `output_dir`, `files`, `terraform_validate` |
+| `v1-criteria` | `devsecops criteria --format json` | `kind`, `schema_version`, `cli_version`, `stable_ready`, `criteria`, `stable_release_gates`, `next_actions` |
 | `control-catalog` | `devsecops controls --format json` | `kind`, `schema_version`, `controls` |
 | `command-inventory` | `devsecops inventory --format json` | `kind`, `schema_version`, `commands`, `deprecation_policy`, `json_outputs`, `generated_artifacts` |
 

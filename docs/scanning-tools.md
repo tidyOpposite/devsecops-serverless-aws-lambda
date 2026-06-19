@@ -16,7 +16,7 @@ workload release process that publishes `LAMBDA_IMAGE_URI`.
 | --- | --- | --- |
 | IaC | Trivy config scan | Fast Terraform misconfiguration checks with straightforward GitHub Actions integration and CLI readiness reporting. |
 | Container | Snyk Container | Optional deploy gate for known CVEs in the configured Lambda image. The CLI reports whether the gate can run based on config and secrets. |
-| DAST | OWASP ZAP baseline | Optional passive HTTP scanning against the deployed API. The CLI keeps it disabled until the operator opts in. |
+| DAST | OWASP ZAP baseline | Optional passive HTTP scanning against explicitly public deployed APIs. The CLI keeps it disabled until the operator opts in and the API auth mode is `NONE`. |
 
 ## CLI Controls
 
@@ -78,8 +78,8 @@ compliance reporting becomes a product goal.
 | Risk | Can create noisy warnings if used as a hard gate without tuning. | Template quality and target relevance need governance. |
 
 Decision: OWASP ZAP is optional because this kit does not define the workload
-routes. Enable it through the CLI when the deployed workload has an HTTP surface
-that is safe for a passive baseline scan.
+routes. Enable it through the CLI only when the deployed workload has an
+explicitly public HTTP surface that is safe for a passive baseline scan.
 
 ## Gate Policy
 
@@ -87,5 +87,5 @@ that is safe for a passive baseline scan.
 | --- | --- |
 | Snyk high/critical image vulnerability | Fail deployment when `SNYK_TOKEN` is configured. |
 | Trivy high/critical IaC finding | Fail CI. |
-| OWASP ZAP fail-level result | Fail deployment validation and trigger Lambda rollback when `ENABLE_DAST=true`. |
+| OWASP ZAP fail-level result | Fail deployment validation and trigger Lambda rollback when `ENABLE_DAST=true` and `API_AUTHORIZATION_TYPE=NONE`. |
 | OWASP ZAP warnings | Report but do not fail by default (`-I`) to avoid noisy rollback loops. |

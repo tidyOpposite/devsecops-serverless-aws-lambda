@@ -8,6 +8,7 @@ set -euo pipefail
 
 gh variable set PROJECT_NAME --body 'golden-pipeline'
 gh variable set LAMBDA_IMAGE_URI --body '123456789012.dkr.ecr.eu-central-1.amazonaws.com/golden-pipeline:sha-abc123'
+gh variable set API_AUTHORIZATION_TYPE --body 'AWS_IAM'
 gh variable set ENABLE_SNYK_SCAN --body 'true'
 gh variable set ENABLE_HTTP_VALIDATION --body 'true'
 gh variable set ENABLE_DAST --body 'true'

@@ -103,14 +103,15 @@ flowchart LR
 | Readiness diagnostics | `devsecops readiness`, `[i] details`, `doctor`, `gh-doctor`, `actions-status`, and `branch-doctor` explain what blocks a deploy-ready pipeline. |
 | AWS diagnostics | `devsecops aws-doctor` checks AWS identity, backend bucket, lock table, ECR, Lambda execution role, Lambda, API Gateway, CloudWatch logs, and configured ECR image existence. |
 | Environments | `dev`, `staging`, and `prod` are mapped to Terraform workspaces. Resource names include the environment, for example `devsecops-pipeline-prod-lambda`. |
-| Terraform state | Remote S3 backend with DynamoDB locking. `terraform/bootstrap` creates both prerequisites with encrypted state and public access blocked. |
+| Terraform state | Remote S3 backend with DynamoDB locking. `terraform/bootstrap` creates KMS-encrypted state, encrypted locks, access logging, lifecycle retention, and public access blocks. |
 | IaC structure | Root Terraform composes modules in `terraform/modules`: `kms`, `storage`, `ecr`, `lambda`, and `api-gateway`. |
 | PR workflow | Pull requests run Terraform formatting, validation, and Trivy IaC scanning. Same-repository PRs also run an AWS-backed Terraform plan with the plan role and publish a PR comment plus artifact. |
 | Production deploy | `terraform apply` runs only from manual `workflow_dispatch` with `mode=deploy`, `environment=prod`, and the workflow run started from `main`. Direct pushes do not start Actions. |
 | Image deployment | The deploy workflow and Terraform require an explicit immutable `LAMBDA_IMAGE_URI` and reject mutable `latest` or `bootstrap` tags. |
+| API authorization | API Gateway routes default to `AWS_IAM`; health checks use SigV4 signing for protected production endpoints. |
 | Container scanning | Snyk can scan the configured image when `SNYK_TOKEN` is present. |
 | Rollback | The deploy job captures the previous Lambda image URI and restores it automatically if apply or enabled validation fails. |
-| Optional validation | `/health` smoke test and OWASP ZAP baseline DAST can be enabled with repository variables. |
+| Optional validation | `/health` smoke test can validate IAM-protected APIs; OWASP ZAP baseline DAST runs only when the API is explicitly public. |
 
 ## Repository Layout
 
@@ -132,40 +133,18 @@ docs/                               CLI-first security, scanner, cost, and troub
 
 ## Quick Start
 
-Install the latest published release with Python 3.11, 3.12, or 3.13 and
-`pipx`:
+Install the latest published release with the installer. It finds
+Python 3.11, 3.12, or 3.13, verifies the release wheel against `SHA256SUMS`,
+installs into a private virtual environment, and writes a `devsecops` launcher:
 
 ```bash
-PYTHON="${PYTHON:-python3.11}"
-
-"${PYTHON}" -m pip install --user pipx
-"${PYTHON}" -m pipx ensurepath
-export PATH="$HOME/.local/bin:$PATH"
-
-WHEEL_URL="$(
-  "${PYTHON}" - <<'PY'
-import json
-import urllib.request
-
-repo = "tidyOpposite/devsecops-serverless-aws-lambda"
-with urllib.request.urlopen(f"https://api.github.com/repos/{repo}/releases/latest") as response:
-    release = json.load(response)
-
-for asset in release["assets"]:
-    if asset["name"].endswith("-py3-none-any.whl"):
-        print(asset["browser_download_url"])
-        break
-else:
-    raise SystemExit("No wheel asset found on the latest release.")
-PY
-)"
-
-"${PYTHON}" -m pipx install --python "${PYTHON}" "devsecops-pipeline-cli @ ${WHEEL_URL}"
-devsecops menu
+curl -fsSL https://raw.githubusercontent.com/tidyOpposite/devsecops-serverless-aws-lambda/main/install.sh | sh
+devsecops
 ```
 
 See [Distribution and compatibility](docs/distribution.md) for pinned install,
-upgrade, shell completion, checksum verification, and supported tool versions.
+manual wheel install, upgrade, shell completion, checksum verification, and
+supported tool versions.
 
 The main menu uses section-style navigation: selecting an item clears the
 terminal, opens that section, and returns to the main menu when you press
@@ -249,7 +228,7 @@ devsecops readiness --format json
 devsecops readiness --strict --format compact
 devsecops dry-run --image-uri <immutable-ecr-image-uri>
 devsecops preflight --image-uri <immutable-ecr-image-uri>
-devsecops health --url https://abc123.execute-api.us-east-1.amazonaws.com/health
+devsecops health --url https://abc123.execute-api.us-east-1.amazonaws.com/health --aws-sigv4
 devsecops aws outputs --environment prod --format json
 
 devsecops github setup  # prints gh commands for repo variables/secrets
@@ -271,6 +250,7 @@ devsecops inventory --format json # stable command/JSON/artifact contract
 devsecops next          # show the single next setup action for this repo
 devsecops start --preset balanced # guided safe onboarding flow
 devsecops evidence collect --rc # collect local release-candidate evidence
+devsecops criteria --strict # check Version 1.0 criteria and stable blockers
 devsecops completion bash # print shell completion for bash, zsh, or fish
 devsecops render        # writes ignored Terraform/GitHub helper artifacts
 devsecops render --dry-run
@@ -291,11 +271,11 @@ auto-refreshes every `--interval` seconds.
 The core CLI remains dependency-free. To try the optional Rich/Textual UI:
 
 ```bash
-python3.11 -m pipx inject devsecops-pipeline-cli "rich>=13.7" "textual>=0.79"
+curl -fsSL https://raw.githubusercontent.com/tidyOpposite/devsecops-serverless-aws-lambda/main/install.sh | sh -s -- --with-tui
 devsecops tui
 ```
 
-From a local checkout, `pipx install ".[tui]"` also works.
+From a local checkout, `pipx install ".[tui]"` still works.
 
 The clean configuration workflow writes `.devsecops-pipeline.toml`, which is
 intentionally ignored by Git and includes `schema_version = 1`.
@@ -343,8 +323,8 @@ After a deploy, inspect the live AWS surface without mutating resources:
 
 ```bash
 devsecops aws outputs --environment prod
-devsecops health
-devsecops health --url https://abc123.execute-api.us-east-1.amazonaws.com/health
+devsecops health --aws-sigv4
+devsecops health --url https://abc123.execute-api.us-east-1.amazonaws.com/health --aws-sigv4
 devsecops github status --format compact --strict
 ```
 
@@ -358,6 +338,12 @@ with the commands in
 bundle captures release verification, strict config/readiness output, GitHub
 setup, workflow status, Terraform outputs, AWS outputs, health checks,
 CloudWatch logs, and rollback readiness.
+
+Before a stable tag, run:
+
+```bash
+devsecops criteria --strict --evidence-dir dist/devsecops/production-evidence/v1.0.0
+```
 
 The `set` command supports non-interactive configuration for scripts and quick
 edits:
@@ -482,9 +468,10 @@ Repository variables:
 | --- | --- | --- |
 | `PROJECT_NAME` | `devsecops-pipeline` | Prefix for AWS resources and ECR repository names. |
 | `LAMBDA_IMAGE_URI` | none | Required for manual production deploy. Immutable image URI deployed to Lambda. |
+| `API_AUTHORIZATION_TYPE` | `AWS_IAM` | API Gateway route authorization. Use `NONE` only for demo or intentionally public non-sensitive APIs. |
 | `ENABLE_SNYK_SCAN` | `false` | When `true` and `SNYK_TOKEN` is present, CI scans the configured image with Snyk. |
 | `ENABLE_HTTP_VALIDATION` | `false` | When `true`, CI calls the API Gateway `/health` URL after deployment. |
-| `ENABLE_DAST` | `false` | When `true`, CI runs OWASP ZAP baseline scan against the API Gateway invoke URL. |
+| `ENABLE_DAST` | `false` | When `true`, CI runs OWASP ZAP baseline scan only when `API_AUTHORIZATION_TYPE=NONE`. |
 | `PROD_APPROVAL_ENVIRONMENT` | `prod` | GitHub environment used by the production deploy job. Composer sets `devsecops-no-approval` when approval is disabled. |
 
 Recommended branch protection for `main`:
@@ -511,7 +498,7 @@ and [Security controls and policy presets](docs/security-controls.md).
 | Push to `main` | n/a | none | No workflow run. Maintainer pushes do not consume Actions minutes. |
 | Manual `workflow_dispatch`, `mode=plan` | selected `dev/staging/prod` | `plan` only | No apply. |
 | Manual `workflow_dispatch`, `mode=deploy`, `environment=prod`, branch `main` | `prod` | `apply` | Scan configured image when enabled, deploy Lambda, optionally validate HTTP and DAST, rollback on failure. |
-| Push tag `v*.*.*` | n/a | n/a | Publish GitHub Release from `docs/release-<tag>.md` or `CHANGELOG.md` with wheel, source distribution, and `SHA256SUMS`. |
+| Push tag `v*.*.*` | n/a | n/a | Publish GitHub Release from `docs/release-<tag>.md` or `CHANGELOG.md` with installer, wheel, source distribution, and `SHA256SUMS`. |
 
 ## Deployment Flow
 
@@ -537,7 +524,8 @@ production-proof release record, use
     `environment=prod` from `main`.
 11. Apply the full Terraform workload with the configured image URI.
 12. Wait for the Lambda update to complete.
-13. Optionally call `/health` and run OWASP ZAP baseline DAST.
+13. Optionally call `/health`; run OWASP ZAP baseline DAST only when
+    `API_AUTHORIZATION_TYPE=NONE`.
 14. If deployment validation fails, update Lambda back to the previous image
     and re-apply Terraform with the previous URI to remove state drift.
 
@@ -561,8 +549,8 @@ repository contract.
 
 If `ENABLE_HTTP_VALIDATION=true`, the image must handle API Gateway HTTP API
 events and return a successful response for `GET /health`. If
-`ENABLE_DAST=true`, the API should be safe for a passive OWASP ZAP baseline
-scan.
+`ENABLE_DAST=true`, set `API_AUTHORIZATION_TYPE=NONE` only when the API is
+safe for a passive unauthenticated OWASP ZAP baseline scan.
 
 ## Useful Terraform Outputs
 
@@ -582,8 +570,7 @@ output_s3_bucket_name = "devsecops-pipeline-prod-workload-data-123456789012"
 Health check, when the workload implements `/health`:
 
 ```bash
-curl "$(terraform output -raw api_gateway_health_url)"
-devsecops health
+devsecops health --aws-sigv4
 ```
 
 ## Reference Documents
@@ -609,6 +596,7 @@ devsecops health
 * [Upgrade guide](docs/upgrade-guide.md)
 * [Known limitations](docs/known-limitations.md)
 * [Changelog](CHANGELOG.md)
+* [v0.12.0 release notes](docs/release-v0.12.0.md)
 * [v0.11.0 release notes](docs/release-v0.11.0.md)
 * [v0.8.0 release notes](docs/release-v0.8.0.md)
 * [v0.7.0 release notes](docs/release-v0.7.0.md)
@@ -631,9 +619,8 @@ The full accepted-limitations and stable-release blocker register is tracked in
 * The CLI is the product surface, but Terraform and GitHub Actions remain the
   execution layer. Advanced operators may still need to inspect Terraform plans
   and workflow logs directly.
-* The API is unauthenticated to keep the kit focused on pipeline controls. Add
-  Cognito, IAM auth, JWT authorizers, or API keys before handling sensitive
-  workloads.
+* API Gateway defaults to IAM authorization, but workload-level user identity,
+  tenant checks, and business authorization are still outside this repository.
 * Optional DAST is a passive baseline scan only. Authenticated flows and
   business-logic checks need workload-specific tests.
 * Before `v1.0.0`, the release record still needs a real AWS/GitHub production

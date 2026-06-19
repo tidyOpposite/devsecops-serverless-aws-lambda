@@ -7,6 +7,52 @@ semantic versioning.
 
 No changes yet.
 
+## v0.12.0 - 2026-06-19
+
+### Added
+
+* One-command `install.sh` bootstrapper for GitHub Release installs without a
+  separate `pipx` setup step.
+* `devsecops criteria` stable-readiness gate for Version 1.0 criteria,
+  production evidence, and WSL2 evidence checks.
+* `API_AUTHORIZATION_TYPE`/`api_authorization_type` support with `AWS_IAM` as
+  the secure default for generated API Gateway routes.
+* SigV4 signing support for `devsecops health --aws-sigv4` so IAM-protected
+  health endpoints can be validated outside GitHub Actions.
+* Terraform output for the API Gateway authorization mode.
+
+### Changed
+
+* Quick Start and distribution docs now install through the bootstrapper and
+  launch the CLI with `devsecops`.
+* Release-candidate evidence bundles now include `criteria.json` so stable
+  blockers are machine-checkable rather than only documented.
+* Release publishing now includes `install.sh` in release assets and
+  `SHA256SUMS`.
+* GitHub Actions are pinned to commit SHAs and CI/release build tooling is
+  pinned to exact `pip`, `build`, `setuptools`, and `wheel` versions.
+* Production health validation signs requests when API Gateway uses IAM
+  authorization; OWASP ZAP baseline DAST now runs only for explicitly public
+  APIs.
+* Terraform backend bootstrap now provisions a customer-managed KMS key,
+  encrypted DynamoDB locking, state bucket access logging, TLS-only bucket
+  policies, and lifecycle retention.
+* Workload S3 buckets now include lifecycle retention for old versions and
+  access logs.
+* Lambda functions now use the workload KMS key for environment variables and
+  configure reserved concurrency.
+
+### Security
+
+* API Gateway routes are no longer public by default; `NONE` authorization must
+  be explicitly configured for demo or intentionally public APIs.
+* KMS key policy service access is constrained with account, service, and
+  encryption-context conditions where AWS services support them.
+* `devsecops health` now rejects non-HTTP URL schemes before opening a URL.
+* Security docs and limitations were updated to remove the old
+  unauthenticated-by-default API exception and describe residual
+  workload-level authorization responsibilities.
+
 ## v0.11.0 - 2026-06-13
 
 ### Added

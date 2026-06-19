@@ -33,22 +33,24 @@ module "ecr" {
 module "lambda" {
   source = "./modules/lambda"
 
-  aws_region         = data.aws_region.current.name
-  environment        = local.environment
-  kms_key_arn        = module.kms.key_arn
-  lambda_image_uri   = var.lambda_image_uri
-  lambda_memory_size = try(local.environment_settings.lambda_memory_size, var.lambda_memory_size)
-  lambda_timeout     = try(local.environment_settings.lambda_timeout, var.lambda_timeout)
-  log_retention_days = local.environment_settings.log_retention_days
-  name_prefix        = local.name_prefix
-  output_bucket_arn  = module.storage.output_bucket_arn
-  output_bucket_name = module.storage.output_bucket_name
-  tags               = local.common_tags
+  aws_region                     = data.aws_region.current.name
+  environment                    = local.environment
+  kms_key_arn                    = module.kms.key_arn
+  lambda_image_uri               = var.lambda_image_uri
+  lambda_memory_size             = try(local.environment_settings.lambda_memory_size, var.lambda_memory_size)
+  lambda_timeout                 = try(local.environment_settings.lambda_timeout, var.lambda_timeout)
+  log_retention_days             = local.environment_settings.log_retention_days
+  name_prefix                    = local.name_prefix
+  output_bucket_arn              = module.storage.output_bucket_arn
+  output_bucket_name             = module.storage.output_bucket_name
+  reserved_concurrent_executions = var.lambda_reserved_concurrent_executions
+  tags                           = local.common_tags
 }
 
 module "api_gateway" {
   source = "./modules/api-gateway"
 
+  authorization_type         = var.api_authorization_type
   api_throttling_burst_limit = local.environment_settings.api_throttling_burst_limit
   api_throttling_rate_limit  = local.environment_settings.api_throttling_rate_limit
   cors_allowed_origins       = local.environment_settings.cors_allowed_origins

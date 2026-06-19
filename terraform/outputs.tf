@@ -18,6 +18,11 @@ output "api_gateway_invoke_url" {
   value       = module.api_gateway.invoke_url
 }
 
+output "api_gateway_authorization_type" {
+  description = "Authorization type configured for API Gateway routes."
+  value       = var.api_authorization_type
+}
+
 output "ecr_repository_name" {
   description = "Name of the ECR repository for Lambda images."
   value       = module.ecr.repository_name

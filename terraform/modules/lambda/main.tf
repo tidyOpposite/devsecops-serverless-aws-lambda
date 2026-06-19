@@ -89,13 +89,17 @@ resource "aws_cloudwatch_log_group" "lambda_log_group" {
 }
 
 resource "aws_lambda_function" "workload" {
-  function_name = local.function_name
-  role          = aws_iam_role.lambda_exec_role.arn
-  package_type  = "Image"
-  image_uri     = local.image_uri
-  architectures = ["x86_64"]
-  memory_size   = var.lambda_memory_size
-  timeout       = var.lambda_timeout
+  #checkov:skip=CKV_AWS_117:The generic Lambda image is not placed in a VPC by default; workloads add VPC config when private network access is required.
+  #checkov:skip=CKV_AWS_272:Lambda code signing does not apply to container image package type; image immutability and scanner gates are enforced instead.
+  function_name                  = local.function_name
+  role                           = aws_iam_role.lambda_exec_role.arn
+  package_type                   = "Image"
+  image_uri                      = local.image_uri
+  architectures                  = ["x86_64"]
+  kms_key_arn                    = var.kms_key_arn
+  memory_size                    = var.lambda_memory_size
+  reserved_concurrent_executions = var.reserved_concurrent_executions
+  timeout                        = var.lambda_timeout
 
   dead_letter_config {
     target_arn = aws_sqs_queue.lambda_dlq.arn

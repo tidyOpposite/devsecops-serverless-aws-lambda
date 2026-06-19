@@ -1,6 +1,6 @@
 # Release Checklist
 
-Use this checklist for every `vX.Y.Z` release. Replace `0.11.0` and `v0.11.0`
+Use this checklist for every `vX.Y.Z` release. Replace `0.12.0` and `v0.12.0`
 with the target version.
 
 ## 1. Prepare The Version
@@ -20,7 +20,7 @@ Update all version references together:
 Update release documentation:
 
 * `CHANGELOG.md`
-* `docs/release-v0.11.0.md`
+* `docs/release-v0.12.0.md`
 * `README.md` release links when a new release note is added
 * `ROADMAP.md` milestone status when a milestone ships
 
@@ -30,7 +30,9 @@ Update release documentation:
 PYTHON="${PYTHON:-python3.11}"
 
 PYTHONPATH=cli "${PYTHON}" -m unittest discover -s cli/tests
-"${PYTHON}" -m pip install --upgrade build setuptools wheel
+sh -n install.sh
+./install.sh --help >/tmp/devsecops-install-help.txt
+"${PYTHON}" -m pip install --upgrade pip==26.1.2 build==1.5.0 setuptools==82.0.1 wheel==0.47.0
 rm -rf build
 "${PYTHON}" -m build
 "${PYTHON}" -m pip install --no-deps --no-build-isolation .
@@ -58,14 +60,17 @@ PYTHON="${PYTHON:-python3.11}"
 
 rm -rf build dist
 "${PYTHON}" -m build
+cp install.sh dist/install.sh
+chmod 0755 dist/install.sh
 cd dist
-shasum -a 256 *.whl *.tar.gz > SHA256SUMS
+shasum -a 256 install.sh *.whl *.tar.gz > SHA256SUMS
 shasum -a 256 -c SHA256SUMS
 cd ..
 ```
 
 The tag workflow repeats this build on GitHub Actions and publishes:
 
+* installer
 * wheel
 * source distribution
 * `SHA256SUMS`
@@ -75,6 +80,7 @@ The tag workflow repeats this build on GitHub Actions and publishes:
 ```bash
 git status --short
 git add \
+  install.sh \
   cli/devsecops_cli/main.py \
   cli/devsecops_cli/__init__.py \
   pyproject.toml \
@@ -94,9 +100,9 @@ git add \
   docs/stability-contract.md \
   docs/v1.0.0-release-candidate-checklist.md \
   docs/upgrade-guide.md \
-  docs/release-v0.11.0.md \
+  docs/release-v0.12.0.md \
   docs/command-inventory.md
-git commit -m "Release v0.11.0 release candidate hardening"
+git commit -m "Release v0.12.0 release candidate hardening"
 ```
 
 ## 5. Tag And Push
@@ -104,9 +110,9 @@ git commit -m "Release v0.11.0 release candidate hardening"
 Create an annotated tag from the release commit:
 
 ```bash
-git tag -a v0.11.0 -m "Release v0.11.0"
+git tag -a v0.12.0 -m "Release v0.12.0"
 git push origin main
-git push origin v0.11.0
+git push origin v0.12.0
 ```
 
 The `Publish GitHub Release` workflow runs on `v*.*.*` tags.
@@ -116,21 +122,24 @@ The `Publish GitHub Release` workflow runs on `v*.*.*` tags.
 After the workflow finishes:
 
 ```bash
-VERSION="0.11.0"
+VERSION="0.12.0"
 TAG="v${VERSION}"
 BASE_URL="https://github.com/tidyOpposite/devsecops-serverless-aws-lambda/releases/download/${TAG}"
 WHEEL="devsecops_pipeline_cli-${VERSION}-py3-none-any.whl"
 
 curl -fsSLO "${BASE_URL}/SHA256SUMS"
+curl -fsSLO "${BASE_URL}/install.sh"
 curl -fsSLO "${BASE_URL}/${WHEEL}"
+grep " install.sh$" SHA256SUMS > install.sh.SHA256SUMS
 grep " ${WHEEL}$" SHA256SUMS > "${WHEEL}.SHA256SUMS"
+shasum -a 256 -c install.sh.SHA256SUMS
 shasum -a 256 -c "${WHEEL}.SHA256SUMS"
-python3.11 -m pipx install --force --python python3.11 "./${WHEEL}"
+sh install.sh --version "${TAG}"
 devsecops --version
 ```
 
 Confirm the release page includes the expected notes from
-`docs/release-v0.11.0.md`.
+`docs/release-v0.12.0.md`.
 
 ## 7. Production Evidence Gate
 
@@ -157,7 +166,7 @@ publishing the release.
 
 ## 8. Stability Contract Gate
 
-For `v0.11.0` and later releases, verify the public contract before publishing:
+For `v0.12.0` and later releases, verify the public contract before publishing:
 
 ```bash
 devsecops inventory --format json
@@ -182,12 +191,13 @@ Confirm:
 
 ## 9. v1.0 Release Candidate Hardening Gate
 
-For `v0.11.0` release-candidate hardening and the final pre-`v1.0.0` release
+For `v0.12.0` release-candidate hardening and the final pre-`v1.0.0` release
 record, complete [v1.0.0 release candidate checklist](v1.0.0-release-candidate-checklist.md).
 
 At minimum, attach evidence for:
 
 * every Version 1.0 criterion in the evidence map;
+* `devsecops criteria --strict --format json` output;
 * `devsecops evidence collect --rc` output;
 * supported operating systems and tool versions in
   [Distribution and compatibility](distribution.md);
@@ -198,4 +208,5 @@ At minimum, attach evidence for:
 * accepted limitations and stable-release blockers from
   [Known limitations](known-limitations.md).
 
-Do not tag `v1.0.0` until the blocker register in the RC checklist is empty.
+Do not tag `v1.0.0` until `devsecops criteria --strict` exits `0` against the
+final evidence directory and the blocker register in the RC checklist is empty.

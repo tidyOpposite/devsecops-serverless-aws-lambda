@@ -4,9 +4,19 @@ locals {
     "arn:aws:iam::${var.account_id}:root",
     local.terraform_admin_role_arn,
   ])
+  log_bucket_arn    = "arn:aws:s3:::${var.name_prefix}-access-logs-${var.account_id}"
+  output_bucket_arn = "arn:aws:s3:::${var.name_prefix}-workload-data-${var.account_id}"
+  ecr_repo_arn      = "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/${var.name_prefix}-lambda-repo"
+  lambda_dlq_arn    = "arn:aws:sqs:${var.aws_region}:${var.account_id}:${var.name_prefix}-lambda-dlq"
 }
 
+#checkov:skip=CKV_AWS_109:KMS key policies must use resource "*" for the current key; principals and service conditions scope access.
+#checkov:skip=CKV_AWS_111:KMS key policies must use resource "*" for the current key; write access is constrained by principal and service context.
+#checkov:skip=CKV_AWS_356:KMS key policies must use resource "*" for the current key; the policy is bound to aws_kms_key.encryption_key.
 data "aws_iam_policy_document" "kms_key_policy" {
+  #checkov:skip=CKV_AWS_109:KMS key policies must use resource "*" for the current key; principals and service conditions scope access.
+  #checkov:skip=CKV_AWS_111:KMS key policies must use resource "*" for the current key; write access is constrained by principal and service context.
+  #checkov:skip=CKV_AWS_356:KMS key policies must use resource "*" for the current key; the policy is bound to aws_kms_key.encryption_key.
   statement {
     sid    = "EnableRootAndTerraformRolePermissions"
     effect = "Allow"
@@ -48,6 +58,27 @@ data "aws_iam_policy_document" "kms_key_policy" {
       "kms:DescribeKey",
     ]
     resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.aws_region}.amazonaws.com"]
+    }
+    condition {
+      test     = "StringLike"
+      variable = "kms:EncryptionContext:aws:s3:arn"
+      values = [
+        local.log_bucket_arn,
+        "${local.log_bucket_arn}/*",
+        local.output_bucket_arn,
+        "${local.output_bucket_arn}/*",
+      ]
+    }
   }
 
   statement {
@@ -62,6 +93,22 @@ data "aws_iam_policy_document" "kms_key_policy" {
       "kms:Decrypt",
     ]
     resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["sqs.${var.aws_region}.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:aws:sqs:arn"
+      values   = [local.lambda_dlq_arn]
+    }
   }
 
   statement {
@@ -82,7 +129,17 @@ data "aws_iam_policy_document" "kms_key_policy" {
     condition {
       test     = "ArnLike"
       variable = "aws:SourceArn"
-      values   = ["arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:*"]
+      values = [
+        "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/lambda/${var.name_prefix}-lambda",
+        "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/lambda/${var.name_prefix}-lambda:*",
+        "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/apigateway/${var.name_prefix}-http-api",
+        "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/apigateway/${var.name_prefix}-http-api:*",
+      ]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
     }
   }
 
@@ -101,6 +158,17 @@ data "aws_iam_policy_document" "kms_key_policy" {
       "kms:DescribeKey",
     ]
     resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ecr.${var.aws_region}.amazonaws.com"]
+    }
   }
 }
 

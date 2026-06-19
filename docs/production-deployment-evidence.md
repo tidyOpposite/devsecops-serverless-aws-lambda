@@ -14,7 +14,7 @@ Lambda image, and protected `main` branch.
 Store live evidence outside Git because `dist/` is ignored:
 
 ```bash
-export RELEASE_TAG="${RELEASE_TAG:-v0.11.0}"
+export RELEASE_TAG="${RELEASE_TAG:-v0.12.0}"
 export EVIDENCE_ROOT="${EVIDENCE_ROOT:-dist/devsecops/production-evidence}"
 export EVIDENCE_DIR="${EVIDENCE_DIR:-${EVIDENCE_ROOT}/${RELEASE_TAG}}"
 
@@ -40,7 +40,7 @@ The final bundle should contain:
 
 Complete these before dispatching production:
 
-* Install a verified release package. For `v0.11.0`, use the release wheel and
+* Install a verified release package. For `v0.12.0`, use the release wheel and
   `SHA256SUMS` once published.
 * Use a real GitHub repository with `main` protected by pull requests and the
   required `Security and Terraform Validate` and `Terraform Plan` checks.
@@ -55,8 +55,8 @@ Complete these before dispatching production:
   Use a digest or immutable tag, never `latest` or `bootstrap`.
 * If `ENABLE_HTTP_VALIDATION=true`, make sure the workload implements
   `GET /health`.
-* If `ENABLE_DAST=true`, make sure the public API can tolerate a passive OWASP
-  ZAP baseline scan.
+* If `ENABLE_DAST=true`, set `API_AUTHORIZATION_TYPE=NONE` only when the public
+  API can tolerate a passive OWASP ZAP baseline scan.
 
 ## 1. Prove Release Install
 
@@ -153,7 +153,8 @@ Review the run log for these production steps:
 * `Read deployment outputs`
 * `Wait for Lambda update`
 * `Smoke test Lambda health endpoint`, when HTTP validation is enabled
-* `Run DAST scan with OWASP ZAP`, when DAST is enabled
+* `Run DAST scan with OWASP ZAP`, when DAST is enabled and
+  `API_AUTHORIZATION_TYPE=NONE`
 * `Roll back Lambda image on failed deployment validation`, present as the
   failure recovery path
 
@@ -179,8 +180,8 @@ The evidence should prove:
 
 ## 6. Prove Health And Logs
 
-Extract the health URL from Terraform output and validate it through the CLI
-and `curl`:
+Extract the health URL from Terraform output and validate it through the CLI.
+Production APIs default to `AWS_IAM`, so use SigV4 signing:
 
 ```bash
 HEALTH_URL="$(
@@ -194,8 +195,12 @@ print(payload["api_gateway_health_url"]["value"])
 PY
 )"
 
-devsecops health --url "${HEALTH_URL}" --format json > "${EVIDENCE_DIR}/health.json"
-curl -fsS "${HEALTH_URL}" | tee "${EVIDENCE_DIR}/health-response.txt"
+devsecops health --url "${HEALTH_URL}" --aws-sigv4 --format json > "${EVIDENCE_DIR}/health.json"
+curl --fail --silent --show-error \
+  --aws-sigv4 "aws:amz:${AWS_REGION}:execute-api" \
+  --user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
+  -H "x-amz-security-token: ${AWS_SESSION_TOKEN}" \
+  "${HEALTH_URL}" | tee "${EVIDENCE_DIR}/health-response.txt"
 ```
 
 Then capture recent Lambda logs:
@@ -286,3 +291,16 @@ Include:
 If the walkthrough discovers a failure mode not covered by
 [Operational runbooks](runbooks/README.md), add or update a runbook before the
 release is considered production-proven.
+
+## Final Verification Gate
+
+After all files are present, run the machine-checkable Version 1.0 gate against
+the evidence directory:
+
+```bash
+devsecops criteria --strict --evidence-dir "${EVIDENCE_DIR}"
+devsecops criteria --format json --evidence-dir "${EVIDENCE_DIR}" > "${EVIDENCE_DIR}/criteria.json"
+```
+
+The strict command must exit `0` before a stable tag is cut. If it fails, the
+output names the missing file or criterion and the next action to take.

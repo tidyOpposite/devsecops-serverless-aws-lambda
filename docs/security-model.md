@@ -17,7 +17,7 @@ the project-level security policy.
 | Lambda workload image | Defines production runtime code supplied through `LAMBDA_IMAGE_URI`. |
 | Lambda execution role | Has access to workload data, KMS, logs, X-Ray, and DLQ publishing. |
 | Workload data S3 bucket | Private bucket available to the Lambda runtime for workload-specific data. |
-| API Gateway endpoint | Public ingress point for untrusted input. |
+| API Gateway endpoint | IAM-protected ingress point for untrusted input unless the operator explicitly sets public route authorization. |
 | CloudWatch logs and DLQ | Operational evidence; may accidentally contain sensitive metadata if logging expands. |
 
 ## Trust Boundaries
@@ -29,7 +29,7 @@ flowchart LR
   cli --> generated["Generated Terraform/GitHub artifacts"]
   generated --> github["GitHub Actions"]
   generated --> terraform["Terraform"]
-  user["API client"] --> api["Public API Gateway"]
+  user["Signed API client"] --> api["API Gateway (AWS_IAM by default)"]
   api --> lambda["Lambda trust boundary"]
   lambda --> s3["Private workload data bucket"]
   lambda --> logs["CloudWatch / X-Ray"]
@@ -55,10 +55,11 @@ flowchart LR
 | Insecure Terraform configuration | Trivy scans Terraform modules for high and critical IaC findings. |
 | Vulnerable container image | Snyk can scan the configured Lambda image before deploy when `SNYK_TOKEN` is configured. |
 | Mutable or accidental image deployment | Deploy workflow and Terraform require an explicit immutable ECR `LAMBDA_IMAGE_URI` and reject `latest` and `bootstrap` tags. |
+| Unauthenticated production API exposure | API Gateway routes default to `AWS_IAM`; `NONE` must be explicitly configured for demos or intentionally public APIs. |
 | Failed or unhealthy Lambda deployment | Deploy job captures the previous image URI and rolls Lambda back if apply or enabled validation fails. |
 | Runtime data exposure | Workload data is stored in a private S3 bucket with public access blocked and non-TLS requests denied. |
 | Weak encryption at rest | Workload data stores use KMS where compatible. |
-| Missing dynamic testing | OWASP ZAP baseline can run after deploy against the live API when `ENABLE_DAST=true`. |
+| Missing dynamic testing | OWASP ZAP baseline can run after deploy against explicitly public APIs when `ENABLE_DAST=true` and `API_AUTHORIZATION_TYPE=NONE`. |
 | Missing audit evidence | `devsecops report --format json` writes attachable control, readiness, validation, preset, and least-privilege evidence. |
 
 ## Tool Responsibility
@@ -69,14 +70,14 @@ flowchart LR
 | CLI snapshots | Accidental local config/generated artifact changes. | Terraform state rollback, cloud resource rollback, or secrets exposed outside ignored local files. |
 | Snyk Container | Known CVEs in the configured container image. | Source-level flaws and private package issues not present in the image metadata. |
 | Trivy | Terraform/AWS misconfigurations before apply. | Runtime-only behavior and API-level vulnerabilities. |
-| OWASP ZAP | Passive dynamic findings on the deployed HTTP surface. | Authenticated flows, deep business logic, and non-HTTP risks. |
+| OWASP ZAP | Passive dynamic findings on an explicitly public deployed HTTP surface. | IAM-protected APIs, authenticated flows, deep business logic, and non-HTTP risks. |
 | Terraform workspaces | Environment state isolation. | Account-level isolation; use separate AWS accounts for stronger production boundaries. |
 | DynamoDB locking | Parallel state mutation. | Bad plans, overprivileged IAM, or manual console drift. |
 
 ## Residual Risks
 
-* API Gateway is intentionally unauthenticated. Add an authorizer before using
-  this pattern for sensitive or high-abuse workloads.
+* API Gateway defaults to IAM authorization, but application-level identity,
+  tenant isolation, and business authorization remain workload responsibilities.
 * Application source scanning, dependency scanning, test coverage, and image
   build hardening are expected to happen before publishing `LAMBDA_IMAGE_URI`.
 * CLI snapshots are local safety artifacts, not a substitute for Git history,

@@ -90,6 +90,17 @@ variable "environment_config" {
   }
 }
 
+variable "api_authorization_type" {
+  description = "Authorization mode for API Gateway HTTP routes. Use AWS_IAM for production workloads; NONE is only for demos or public non-sensitive APIs."
+  type        = string
+  default     = "AWS_IAM"
+
+  validation {
+    condition     = contains(["AWS_IAM", "NONE"], var.api_authorization_type)
+    error_message = "api_authorization_type must be AWS_IAM or NONE."
+  }
+}
+
 variable "lambda_memory_size" {
   description = "Legacy fallback for Lambda memory size. Prefer environment_config."
   type        = number
@@ -100,6 +111,17 @@ variable "lambda_timeout" {
   description = "Legacy fallback for Lambda timeout. Prefer environment_config."
   type        = number
   default     = 120
+}
+
+variable "lambda_reserved_concurrent_executions" {
+  description = "Function-level reserved concurrency limit for the Lambda workload."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.lambda_reserved_concurrent_executions >= 1 && var.lambda_reserved_concurrent_executions <= 1000
+    error_message = "lambda_reserved_concurrent_executions must be between 1 and 1000."
+  }
 }
 
 variable "lambda_image_uri" {

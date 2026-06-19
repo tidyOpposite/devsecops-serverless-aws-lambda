@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+  #checkov:skip=CKV_GHA_7:Manual production deploy needs enumerated mode/environment inputs and protected environment approval.
   workflow_dispatch:
     inputs:
       mode:
@@ -38,6 +39,7 @@ env:
   TF_WORKING_DIR: terraform
   DEPLOY_ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
   LAMBDA_IMAGE_URI: ${{ vars.LAMBDA_IMAGE_URI || '' }}
+  API_AUTHORIZATION_TYPE: ${{ vars.API_AUTHORIZATION_TYPE || 'AWS_IAM' }}
   ENABLE_SNYK_SCAN: ${{ vars.ENABLE_SNYK_SCAN || 'false' }}
   ENABLE_HTTP_VALIDATION: ${{ vars.ENABLE_HTTP_VALIDATION || 'false' }}
   ENABLE_DAST: ${{ vars.ENABLE_DAST || 'false' }}
@@ -49,12 +51,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
@@ -68,7 +70,7 @@ jobs:
         run: terraform -chdir="${TF_WORKING_DIR}" validate -no-color
 
       - name: Run IaC scan with Trivy
-        uses: aquasecurity/trivy-action@v0.34.0
+        uses: aquasecurity/trivy-action@c1824fd6edce30d7ab345a9989de00bbd46ef284 # v0.34.0
         with:
           scan-type: config
           scan-ref: ${{ env.TF_WORKING_DIR }}
@@ -90,7 +92,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
 
@@ -104,13 +106,13 @@ jobs:
           fi
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ secrets.AWS_PLAN_ROLE_TO_ASSUME_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
@@ -129,11 +131,12 @@ jobs:
             -out=tfplan \
             -input=false \
             -no-color \
+            -var="api_authorization_type=${API_AUTHORIZATION_TYPE}" \
             -var="project_name=${PROJECT_NAME}"
           terraform -chdir="${TF_WORKING_DIR}" show -no-color tfplan > "${TF_WORKING_DIR}/tfplan.txt"
 
       - name: Upload Terraform plan artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: terraform-plan-${{ env.DEPLOY_ENVIRONMENT }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
@@ -141,7 +144,7 @@ jobs:
 
       - name: Comment Terraform plan on PR
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           PLAN_PATH: ${{ env.TF_WORKING_DIR }}/tfplan.txt
           PLAN_ENVIRONMENT: ${{ env.DEPLOY_ENVIRONMENT }}
@@ -187,10 +190,11 @@ jobs:
     env:
       DEPLOY_ENVIRONMENT: prod
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
 
@@ -206,7 +210,7 @@ jobs:
           fi
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
@@ -219,7 +223,7 @@ jobs:
 
       - name: Set up Node.js for Snyk
         if: env.ENABLE_SNYK_SCAN == 'true' && env.SNYK_TOKEN != ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
 
@@ -229,14 +233,14 @@ jobs:
 
       - name: Login to Amazon ECR for image scan
         if: env.ENABLE_SNYK_SCAN == 'true' && env.SNYK_TOKEN != ''
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
 
       - name: Scan configured Lambda image with Snyk
         if: env.ENABLE_SNYK_SCAN == 'true' && env.SNYK_TOKEN != ''
         run: snyk container test "${LAMBDA_IMAGE_URI}" --severity-threshold=high
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
@@ -257,6 +261,7 @@ jobs:
             -auto-approve \
             -input=false \
             -no-color \
+            -var="api_authorization_type=${API_AUTHORIZATION_TYPE}" \
             -var="project_name=${PROJECT_NAME}"
 
       - name: Capture currently deployed Lambda image
@@ -277,6 +282,7 @@ jobs:
             -auto-approve \
             -input=false \
             -no-color \
+            -var="api_authorization_type=${API_AUTHORIZATION_TYPE}" \
             -var="project_name=${PROJECT_NAME}" \
             -var="lambda_image_uri=${LAMBDA_IMAGE_URI}"
 
@@ -291,17 +297,32 @@ jobs:
 
       - name: Smoke test Lambda health endpoint
         if: env.ENABLE_HTTP_VALIDATION == 'true'
-        run: curl --fail --silent --show-error --max-time 20 "${{ steps.deployment-outputs.outputs.api_gateway_health_url }}"
+        run: |
+          health_url="${{ steps.deployment-outputs.outputs.api_gateway_health_url }}"
+          if [ "${API_AUTHORIZATION_TYPE}" = "AWS_IAM" ]; then
+            auth_args=(--aws-sigv4 "aws:amz:${AWS_REGION}:execute-api" --user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}")
+            if [ -n "${AWS_SESSION_TOKEN:-}" ]; then
+              auth_args+=(-H "x-amz-security-token: ${AWS_SESSION_TOKEN}")
+            fi
+            curl --fail --silent --show-error --max-time 20 "${auth_args[@]}" "${health_url}"
+          else
+            curl --fail --silent --show-error --max-time 20 "${health_url}"
+          fi
 
       - name: Run DAST scan with OWASP ZAP
-        if: env.ENABLE_DAST == 'true'
-        uses: zaproxy/action-baseline@v0.14.0
+        if: env.ENABLE_DAST == 'true' && env.API_AUTHORIZATION_TYPE == 'NONE'
+        uses: zaproxy/action-baseline@7c4deb10e6261301961c86d65d54a516394f9aed # v0.14.0
         with:
           target: ${{ steps.deployment-outputs.outputs.api_gateway_invoke_url }}
           fail_action: true
           allow_issue_writing: false
           artifact_name: zap-baseline-prod
           cmd_options: "-a -m 5 -I"
+
+      - name: Skip unauthenticated DAST for IAM-protected API
+        if: env.ENABLE_DAST == 'true' && env.API_AUTHORIZATION_TYPE != 'NONE'
+        run: |
+          echo "ENABLE_DAST is true, but API_AUTHORIZATION_TYPE=${API_AUTHORIZATION_TYPE}. OWASP ZAP baseline is skipped unless the API is explicitly public."
 
       - name: Roll back Lambda image on failed deployment validation
         if: failure() && steps.capture-current-image.outputs.previous_image_uri != '' && steps.capture-current-image.outputs.previous_image_uri != 'None'
@@ -316,5 +337,6 @@ jobs:
             -auto-approve \
             -input=false \
             -no-color \
+            -var="api_authorization_type=${API_AUTHORIZATION_TYPE}" \
             -var="project_name=${PROJECT_NAME}" \
             -var="lambda_image_uri=${previous_image_uri}"

@@ -14,6 +14,19 @@ variable "state_bucket_name" {
   }
 }
 
+variable "state_log_bucket_name" {
+  description = "Optional globally unique S3 bucket name for Terraform state access logs. Defaults to <state_bucket_name>-logs."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = var.state_log_bucket_name == "" || (
+      can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.state_log_bucket_name))
+    )
+    error_message = "state_log_bucket_name must be empty or a valid globally unique S3 bucket name."
+  }
+}
+
 variable "lock_table_name" {
   description = "DynamoDB table name used by the Terraform S3 backend for state locking."
   type        = string

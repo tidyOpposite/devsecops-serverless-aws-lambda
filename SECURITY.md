@@ -51,6 +51,8 @@ The execution layer managed by the CLI includes:
 * Environment isolation through Terraform workspaces.
 * Modular Terraform with KMS-encrypted private storage, ECR, Lambda, API
   Gateway, CloudWatch Logs, and SQS DLQ.
+* API Gateway routes default to `AWS_IAM` authorization; public routes require
+  explicitly setting `API_AUTHORIZATION_TYPE=NONE`.
 * Trivy IaC scanning, optional Snyk container scanning, and optional OWASP ZAP
   DAST.
 * Immutable image deployment through `LAMBDA_IMAGE_URI`.
@@ -58,8 +60,9 @@ The execution layer managed by the CLI includes:
 
 ## Known Security Exceptions
 
-* The API is unauthenticated to keep the kit focused on pipeline controls. Add
-  an authorizer before handling sensitive workloads.
+* Workload-level user identity, tenant isolation, and business authorization are
+  outside this repository even though the generated API route defaults to IAM
+  authorization.
 * Application source, dependency scanning, and image build hardening are outside
   this repository and must be handled by the workload release process.
 * CLI snapshots may contain local configuration values. They are ignored by Git

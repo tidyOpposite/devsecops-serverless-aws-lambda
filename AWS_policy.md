@@ -38,7 +38,7 @@ Treat the two roles as different blast-radius controls:
 | Role | Allow | Avoid |
 | --- | --- | --- |
 | Plan role | Read Terraform state, acquire/release the DynamoDB lock, list/read backend objects, and describe existing resources for Terraform refresh. | Do not grant broad create, update, delete, `iam:PassRole`, Lambda update, or KMS administration permissions. Do not reuse the deploy role for pull request planning. |
-| Deploy role | Apply Terraform-managed resources after the protected production environment gate, pass only the Terraform-managed Lambda execution role, read the configured ECR image, and update Lambda image code for deploy/rollback. | Do not use for PR plans. Do not use unscoped account-wide permissions after project, environment, and resource names are stable. Do not store long-lived AWS keys in GitHub. |
+| Deploy role | Apply Terraform-managed resources after the protected production environment gate, pass only the Terraform-managed Lambda execution role, read the configured ECR image, invoke the IAM-protected health route, and update Lambda image code for deploy/rollback. | Do not use for PR plans. Do not use unscoped account-wide permissions after project, environment, and resource names are stable. Do not store long-lived AWS keys in GitHub. |
 
 Generate `dist/devsecops/audit-report.json` with
 `devsecops report --format json` before a production review. The report records
@@ -219,6 +219,12 @@ environment names are stable.
         "xray:PutTraceSegments"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "InvokeHealthRoute",
+      "Effect": "Allow",
+      "Action": "execute-api:Invoke",
+      "Resource": "arn:aws:execute-api:<AWS_REGION>:<ACCOUNT_ID>:*/*/GET/health"
     }
   ]
 }

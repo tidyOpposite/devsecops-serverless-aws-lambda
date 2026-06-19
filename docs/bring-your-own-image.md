@@ -59,8 +59,9 @@ events and return a successful response for:
 GET /health
 ```
 
-If `ENABLE_DAST=true`, the deployed API must be safe for passive OWASP ZAP
-baseline scanning.
+If `ENABLE_DAST=true`, set `API_AUTHORIZATION_TYPE=NONE` only when the
+deployed API is intentionally public and safe for passive OWASP ZAP baseline
+scanning.
 
 ## External Repository Boundary
 

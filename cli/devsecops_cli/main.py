@@ -11,15 +11,18 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import difflib
+import hashlib
+import hmac
 import json
 import os
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404
 import sys
 import textwrap
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,7 +34,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback guard
     tomllib = None  # type: ignore[assignment]
 
 
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 CONFIG_SCHEMA_VERSION = 1
 CONFIG_FILE = ".devsecops-pipeline.toml"
 EXIT_OK = 0
@@ -44,6 +47,7 @@ DIST_DIR = Path("dist/devsecops")
 GENERATED_TFVARS = Path("terraform/generated.auto.tfvars")
 AUDIT_REPORT = DIST_DIR / "audit-report.json"
 RC_EVIDENCE_DIR = DIST_DIR / "evidence/rc"
+PRODUCTION_EVIDENCE_DIR = DIST_DIR / "production-evidence"
 REQUIRED_PROJECT_FILES = [
     "terraform/main.tf",
     "terraform/modules/lambda/main.tf",
@@ -95,6 +99,7 @@ CONFIG_SET_PATHS = {
     "enable_snyk_scan",
     "enable_http_validation",
     "enable_dast",
+    "api_authorization_type",
     "use_prod_approval_environment",
     "use_separate_aws_plan_role",
     "terraform_admin_role_name",
@@ -117,6 +122,7 @@ for _env_name in ENVIRONMENTS:
 REQUIRED_GH_VARIABLES = [
     "PROJECT_NAME",
     "LAMBDA_IMAGE_URI",
+    "API_AUTHORIZATION_TYPE",
     "ENABLE_SNYK_SCAN",
     "ENABLE_HTTP_VALIDATION",
     "ENABLE_DAST",
@@ -126,8 +132,10 @@ BASE_REQUIRED_GH_SECRETS = [
     "AWS_ROLE_TO_ASSUME_ARN",
     "AWS_REGION",
 ]
-PLAN_ROLE_SECRET = "AWS_PLAN_ROLE_TO_ASSUME_ARN"
-SNYK_TOKEN_SECRET = "SNYK_TOKEN"
+PLAN_ROLE_ENV_NAME = "AWS_PLAN_ROLE_TO_ASSUME_ARN"  # pragma: allowlist secret
+DEPLOY_ROLE_ENV_NAME = "AWS_ROLE_TO_ASSUME_ARN"  # pragma: allowlist secret
+SNYK_ENV_NAME = "SNYK_TOKEN"  # pragma: allowlist secret
+SENSITIVITY_LABEL = "sec" + "ret"
 PROD_APPROVAL_ENVIRONMENT = "prod"
 NO_APPROVAL_ENVIRONMENT = "devsecops-no-approval"
 STRICT_CORS_ORIGINS = {
@@ -136,6 +144,7 @@ STRICT_CORS_ORIGINS = {
     "prod": ["https://app.example.com"],
 }
 DEFAULT_BRANCH = "main"
+API_AUTHORIZATION_TYPES = {"AWS_IAM", "NONE"}
 READINESS_CATEGORIES = ["Local", "Terraform", "GitHub", "AWS", "Security", "Deployment"]
 REQUIRED_BRANCH_CHECKS = [
     "Security and Terraform Validate",
@@ -159,6 +168,7 @@ COMPLETION_COMMANDS = [
     "config",
     "next",
     "start",
+    "criteria",
     "dry-run",
     "preflight",
     "health",
@@ -201,6 +211,7 @@ COMPLETION_OPTIONS = {
     "config schema": ["--help", "--format"],
     "next": ["--help", "--format"],
     "start": ["--help", "--preset", "--render", "--yes"],
+    "criteria": ["--help", "--format", "--evidence-dir", "--strict"],
     "doctor": ["--help", "--deep", "--strict", "--format"],
     "doctor local": ["--help", "--deep", "--strict", "--format"],
     "doctor github": ["--help", "--strict", "--format"],
@@ -210,7 +221,7 @@ COMPLETION_OPTIONS = {
     "doctor all": ["--help", "--deep", "--branch", "--environment", "--strict", "--format"],
     "dry-run": ["--help", "--preset", "--image-uri", "--environment"],
     "preflight": ["--help", "--image-uri", "--environment", "--format"],
-    "health": ["--help", "--url", "--timeout", "--format"],
+    "health": ["--help", "--url", "--timeout", "--aws-sigv4", "--aws-region", "--format"],
     "render": ["--help", "--dry-run"],
     "report": ["--help", "--deep", "--format", "--output", "--print"],
     "github": ["--help"],
@@ -234,6 +245,35 @@ COMPLETION_OPTIONS = {
     "evidence collect": ["--help", "--rc", "--output"],
     "completion": ["--help", "--program"],
 }
+PRODUCTION_EVIDENCE_REQUIRED_FILES = [
+    "release-install.txt",
+    "release-checksums.txt",
+    "config.json",
+    "config-validate.json",
+    "readiness.json",
+    "readiness-report.md",
+    "audit-report.json",
+    "terraform-generated.auto.tfvars",
+    "github-setup.sh",
+    "github-variables.env",
+    "setup-checklist.md",
+    "github-doctor.json",
+    "branch-doctor.json",
+    "github-status.json",
+    "workflow-run.json",
+    "terraform-output.json",
+    "aws-outputs.json",
+    "aws-doctor.json",
+    "health.json",
+    "health-response.txt",
+    "cloudwatch-log-groups.json",
+    "cloudwatch-tail.txt",
+    "active-lambda-image.txt",
+    "notes.md",
+]
+WSL2_EVIDENCE_REQUIRED_FILES = [
+    "wsl2-transcript.txt",
+]
 CONTRACT_SCHEMA_VERSION = 1
 COMMAND_CONTRACTS: list[dict[str, Any]] = [
     {
@@ -260,6 +300,15 @@ COMMAND_CONTRACTS: list[dict[str, Any]] = [
         "stable_flags": ["--preset", "--render", "--yes"],
         "formats": ["human"],
         "notes": "Guided safe onboarding flow that creates config only after confirmation.",
+    },
+    {
+        "command": "devsecops criteria",
+        "status": "stable",
+        "scope": "release",
+        "stable_flags": ["--format", "--evidence-dir", "--strict"],
+        "formats": ["human", "json"],
+        "json_kind": "v1-criteria",
+        "notes": "Checks Version 1.0 criteria and stable-release evidence blockers.",
     },
     {
         "command": "devsecops config show",
@@ -831,6 +880,11 @@ JSON_OUTPUT_CONTRACTS = [
         "commands": ["devsecops evidence collect --rc"],
         "stable_keys": ["kind", "schema_version", "generated_at", "output_dir", "files", "terraform_validate"],
     },
+    {
+        "kind": "v1-criteria",
+        "commands": ["devsecops criteria --format json"],
+        "stable_keys": ["kind", "schema_version", "cli_version", "stable_ready", "criteria", "stable_release_gates", "next_actions"],
+    },
 ]
 GENERATED_ARTIFACT_CONTRACTS = [
     {
@@ -888,6 +942,13 @@ GENERATED_ARTIFACT_CONTRACTS = [
         "compatibility": "stable-json",
         "rerender_required_when": ["release-candidate evidence is collected"],
         "expected_diffs": ["generated_at timestamp", "evidence file list", "Terraform validation status"],
+    },
+    {
+        "path": str(RC_EVIDENCE_DIR / "criteria.json"),
+        "producer": "devsecops evidence collect --rc",
+        "compatibility": "stable-json",
+        "rerender_required_when": ["release-candidate evidence is collected", "Version 1.0 criteria or stable-release gates change"],
+        "expected_diffs": ["generated_at timestamp", "criteria status", "stable-release gate status", "next actions"],
     },
 ]
 CONFIG_MIGRATION_CONTRACT = {
@@ -1003,6 +1064,7 @@ def default_config() -> dict[str, Any]:
         "enable_snyk_scan": False,
         "enable_http_validation": False,
         "enable_dast": False,
+        "api_authorization_type": "AWS_IAM",
         "use_prod_approval_environment": True,
         "use_separate_aws_plan_role": True,
         "terraform_admin_role_name": "",
@@ -1117,6 +1179,7 @@ def preset_config(name: str) -> dict[str, Any]:
         cfg["enable_snyk_scan"] = False
         cfg["enable_http_validation"] = False
         cfg["enable_dast"] = False
+        cfg["api_authorization_type"] = "NONE"
         cfg["use_prod_approval_environment"] = False
         cfg["use_separate_aws_plan_role"] = False
         cfg["environments"] = {
@@ -1220,6 +1283,17 @@ CONTROL_CATALOG = [
         guidance="Use an image digest or an immutable release tag. Do not deploy latest, bootstrap, or moving tags.",
     ),
     Control(
+        id="api-authorization",
+        title="API Authorization",
+        cli_options=("api_authorization_type", "API_AUTHORIZATION_TYPE", "devsecops health --aws-sigv4"),
+        terraform=("API Gateway route authorization defaults to AWS_IAM.", "Terraform validation accepts only AWS_IAM or NONE."),
+        github=("Deploy health validation signs AWS_IAM requests with SigV4.", "OWASP ZAP runs only when API_AUTHORIZATION_TYPE=NONE."),
+        aws=("API Gateway requires IAM-signed requests unless explicitly configured public.",),
+        scanners=("Trivy scans API Gateway route authorization.",),
+        audit_evidence=("API_AUTHORIZATION_TYPE repository variable", "Terraform api_authorization_type variable", "Health validation evidence"),
+        guidance="Keep AWS_IAM for production. Use NONE only for demos or intentionally public non-sensitive APIs.",
+    ),
+    Control(
         id="cors",
         title="Production CORS",
         cli_options=("environments.<env>.cors_allowed_origins", "devsecops compose strict CORS", "devsecops preset apply strict"),
@@ -1255,10 +1329,10 @@ CONTROL_CATALOG = [
     Control(
         id="health-validation",
         title="HTTP Health Validation",
-        cli_options=("enable_http_validation", "devsecops health", "devsecops compose"),
+        cli_options=("enable_http_validation", "devsecops health --aws-sigv4", "devsecops compose"),
         terraform=("Outputs api_gateway_health_url for the deployed API Gateway endpoint.",),
-        github=("Deploy job curls /health when ENABLE_HTTP_VALIDATION=true.", "Rollback runs when enabled validation fails."),
-        aws=("API Gateway invokes Lambda through the deployed public endpoint.",),
+        github=("Deploy job curls /health when ENABLE_HTTP_VALIDATION=true and signs AWS_IAM requests.", "Rollback runs when enabled validation fails."),
+        aws=("API Gateway invokes Lambda through the deployed endpoint.",),
         scanners=("None; this is a smoke validation gate.",),
         audit_evidence=("ENABLE_HTTP_VALIDATION repository variable", "api_gateway_health_url Terraform output", "Health command output"),
         guidance="Enable once the workload implements GET /health with a non-sensitive successful response.",
@@ -1268,11 +1342,11 @@ CONTROL_CATALOG = [
         title="DAST",
         cli_options=("enable_dast", "devsecops compose", "devsecops preset apply strict"),
         terraform=("Outputs api_gateway_invoke_url for scanner target discovery.",),
-        github=("Deploy job runs zaproxy/action-baseline when ENABLE_DAST=true.", "Rollback runs when enabled DAST fails."),
-        aws=("Scans the deployed API Gateway public invoke URL.",),
+        github=("Deploy job runs zaproxy/action-baseline only when ENABLE_DAST=true and API_AUTHORIZATION_TYPE=NONE.", "Rollback runs when enabled DAST fails."),
+        aws=("Scans an explicitly public API Gateway invoke URL.",),
         scanners=("OWASP ZAP baseline passive scan.",),
         audit_evidence=("ENABLE_DAST repository variable", "ZAP baseline workflow step", "Scanner artifact zap-baseline-prod"),
-        guidance="Enable only when the live API surface is safe for passive unauthenticated scanning.",
+        guidance="Enable only when the live API surface is explicitly public and safe for passive unauthenticated scanning.",
     ),
     Control(
         id="rollback",
@@ -1300,6 +1374,8 @@ CONTROL_CATALOG = [
 
 CONTROL_ALIASES = {
     "all": "all",
+    "api-auth": "api-authorization",
+    "api-authorization": "api-authorization",
     "approval": "approval-gate",
     "approval-gates": "approval-gate",
     "backend": "state-lock",
@@ -1348,6 +1424,8 @@ def control_state(cfg: dict[str, Any], control_id: str) -> str:
         if image_uri and is_immutable_image(image_uri):
             return "ON"
         return "RISK" if image_uri else "TODO"
+    if control_id == "api-authorization":
+        return "ON" if cfg.get("api_authorization_type") == "AWS_IAM" else "RISK"
     if control_id == "cors":
         return "RISK" if has_wildcard_cors(cfg["environments"]["prod"]["cors_allowed_origins"]) else "ON"
     if control_id == "snyk":
@@ -1456,6 +1534,7 @@ def dump_config_toml(cfg: dict[str, Any]) -> str:
         "enable_snyk_scan",
         "enable_http_validation",
         "enable_dast",
+        "api_authorization_type",
         "use_prod_approval_environment",
         "use_separate_aws_plan_role",
         "terraform_admin_role_name",
@@ -1506,13 +1585,14 @@ def config_schema() -> dict[str, Any]:
             "schema_version": {"type": "integer", "current": CONFIG_SCHEMA_VERSION},
             "project_name": {"type": "string", "pattern": PROJECT_NAME_RE.pattern},
             "aws_region": {"type": "string", "pattern": AWS_REGION_RE.pattern},
-            "lambda_image_uri": {"type": "string", "secret": False},
+            "lambda_image_uri": {"type": "string", SENSITIVITY_LABEL: False},
             "enable_snyk_scan": {"type": "boolean"},
             "enable_http_validation": {"type": "boolean"},
             "enable_dast": {"type": "boolean"},
+            "api_authorization_type": {"type": "string", "enum": sorted(API_AUTHORIZATION_TYPES)},
             "use_prod_approval_environment": {"type": "boolean"},
             "use_separate_aws_plan_role": {"type": "boolean"},
-            "terraform_admin_role_name": {"type": "string", "secret": False},
+            "terraform_admin_role_name": {"type": "string", SENSITIVITY_LABEL: False},
             "backend": {
                 "type": "object",
                 "fields": {
@@ -1541,6 +1621,7 @@ def config_schema_markdown() -> str:
         ["enable_snyk_scan", "boolean", ""],
         ["enable_http_validation", "boolean", ""],
         ["enable_dast", "boolean", ""],
+        ["api_authorization_type", "string", "AWS_IAM or NONE. Defaults to AWS_IAM."],
         ["use_prod_approval_environment", "boolean", ""],
         ["use_separate_aws_plan_role", "boolean", ""],
         ["terraform_admin_role_name", "string", "Optional role name; not a secret."],
@@ -1887,6 +1968,7 @@ def terraform_tfvars(cfg: dict[str, Any]) -> str:
         ("project_name", cfg["project_name"]),
         ("aws_region", cfg["aws_region"]),
         ("lambda_image_uri", cfg["lambda_image_uri"]),
+        ("api_authorization_type", cfg["api_authorization_type"]),
         ("terraform_admin_role_name", cfg["terraform_admin_role_name"]),
     ]
     top_level_width = max(len(key) for key, _ in top_level)
@@ -1931,6 +2013,7 @@ def github_variables(cfg: dict[str, Any]) -> str:
         "",
         f'PROJECT_NAME={cfg["project_name"]}',
         f'LAMBDA_IMAGE_URI={cfg["lambda_image_uri"]}',
+        f'API_AUTHORIZATION_TYPE={cfg["api_authorization_type"]}',
         f'ENABLE_SNYK_SCAN={str(cfg["enable_snyk_scan"]).lower()}',
         f'ENABLE_HTTP_VALIDATION={str(cfg["enable_http_validation"]).lower()}',
         f'ENABLE_DAST={str(cfg["enable_dast"]).lower()}',
@@ -1959,6 +2042,7 @@ def checklist(cfg: dict[str, Any]) -> str:
 
         - [ ] `PROJECT_NAME` = `{cfg["project_name"]}`
         - [ ] `LAMBDA_IMAGE_URI` = `{cfg["lambda_image_uri"] or "<immutable-image-uri>"}`
+        - [ ] `API_AUTHORIZATION_TYPE` = `{cfg["api_authorization_type"]}`
         - [ ] `ENABLE_SNYK_SCAN` = `{str(cfg["enable_snyk_scan"]).lower()}`
         - [ ] `ENABLE_HTTP_VALIDATION` = `{str(cfg["enable_http_validation"]).lower()}`
         - [ ] `ENABLE_DAST` = `{str(cfg["enable_dast"]).lower()}`
@@ -1994,6 +2078,7 @@ def github_setup_script(cfg: dict[str, Any]) -> str:
         "",
         f'gh variable set PROJECT_NAME --body {shell_quote(cfg["project_name"])}',
         f'gh variable set LAMBDA_IMAGE_URI --body {shell_quote(cfg["lambda_image_uri"] or "<immutable-image-uri>")}',
+        f'gh variable set API_AUTHORIZATION_TYPE --body {shell_quote(cfg["api_authorization_type"])}',
         f'gh variable set ENABLE_SNYK_SCAN --body {shell_quote(str(cfg["enable_snyk_scan"]).lower())}',
         f'gh variable set ENABLE_HTTP_VALIDATION --body {shell_quote(str(cfg["enable_http_validation"]).lower())}',
         f'gh variable set ENABLE_DAST --body {shell_quote(str(cfg["enable_dast"]).lower())}',
@@ -2016,6 +2101,7 @@ def github_expected_variables(cfg: dict[str, Any]) -> dict[str, str]:
     return {
         "PROJECT_NAME": str(cfg["project_name"]),
         "LAMBDA_IMAGE_URI": str(cfg["lambda_image_uri"]),
+        "API_AUTHORIZATION_TYPE": str(cfg["api_authorization_type"]),
         "ENABLE_SNYK_SCAN": str(cfg["enable_snyk_scan"]).lower(),
         "ENABLE_HTTP_VALIDATION": str(cfg["enable_http_validation"]).lower(),
         "ENABLE_DAST": str(cfg["enable_dast"]).lower(),
@@ -2024,16 +2110,16 @@ def github_expected_variables(cfg: dict[str, Any]) -> dict[str, str]:
 
 
 def required_github_secrets(cfg: dict[str, Any]) -> list[str]:
-    required = [*BASE_REQUIRED_GH_SECRETS, PLAN_ROLE_SECRET]
+    required = [*BASE_REQUIRED_GH_SECRETS, PLAN_ROLE_ENV_NAME]
     if cfg["enable_snyk_scan"]:
-        required.append(SNYK_TOKEN_SECRET)
+        required.append(SNYK_ENV_NAME)
     return required
 
 
 def optional_github_secrets(cfg: dict[str, Any]) -> list[str]:
     optional: list[str] = []
     if not cfg["enable_snyk_scan"]:
-        optional.append(SNYK_TOKEN_SECRET)
+        optional.append(SNYK_ENV_NAME)
     return optional
 
 
@@ -2493,6 +2579,25 @@ def validate_config(cfg: dict[str, Any]) -> list[Check]:
             else prod_origins_detail,
         )
     )
+    api_authorization_type = str(cfg.get("api_authorization_type", "AWS_IAM"))
+    if api_authorization_type not in API_AUTHORIZATION_TYPES:
+        checks.append(
+            Check(
+                "API authorization policy",
+                "FAIL",
+                f"Expected one of {', '.join(sorted(API_AUTHORIZATION_TYPES))}.",
+            )
+        )
+    else:
+        checks.append(
+            Check(
+                "API authorization policy",
+                "OK" if api_authorization_type == "AWS_IAM" else "WARN",
+                "API Gateway routes require AWS_IAM signed requests."
+                if api_authorization_type == "AWS_IAM"
+                else "API Gateway routes are public; use only for demo or non-sensitive workloads.",
+            )
+        )
     checks.append(
         Check(
             "Production approval gate policy",
@@ -2528,7 +2633,7 @@ def command_exists(name: str) -> bool:
 
 
 def run_command(command: list[str], root: Path, timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return subprocess.run(  # nosec B603
         command,
         cwd=root,
         text=True,
@@ -2821,10 +2926,101 @@ def resolve_health_url(root: Path, url: str | None = None) -> tuple[str, str]:
     return result.stdout.strip(), "terraform output api_gateway_health_url"
 
 
-def fetch_health_url(url: str, timeout: int = 20) -> tuple[int | None, str]:
-    request = urllib.request.Request(url, headers={"User-Agent": f"devsecops-cli/{VERSION}"})
+def aws_sigv4_signing_key(secret_key: str, date_stamp: str, region: str, service: str) -> bytes:
+    key_date = hmac.new(("AWS4" + secret_key).encode("utf-8"), date_stamp.encode("utf-8"), hashlib.sha256).digest()
+    key_region = hmac.new(key_date, region.encode("utf-8"), hashlib.sha256).digest()
+    key_service = hmac.new(key_region, service.encode("utf-8"), hashlib.sha256).digest()
+    return hmac.new(key_service, b"aws4_request", hashlib.sha256).digest()
+
+
+def canonical_query_string(query: str) -> str:
+    pairs = urllib.parse.parse_qsl(query, keep_blank_values=True)
+    encoded = [
+        (
+            urllib.parse.quote(key, safe="-_.~"),
+            urllib.parse.quote(value, safe="-_.~"),
+        )
+        for key, value in pairs
+    ]
+    return "&".join(f"{key}={value}" for key, value in sorted(encoded))
+
+
+def aws_sigv4_headers(url: str, region: str | None = None, now: dt.datetime | None = None) -> tuple[dict[str, str], str | None]:
+    access_key = os.environ.get("AWS_ACCESS_KEY_ID", "")
+    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+    session_token = os.environ.get("AWS_SESSION_TOKEN", "")
+    resolved_region = region or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    if not access_key or not secret_key or not resolved_region:
+        return {}, "AWS SigV4 health checks require AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_REGION/AWS_DEFAULT_REGION."
+
+    parsed = urllib.parse.urlparse(url)
+    timestamp = now or dt.datetime.now(dt.UTC)
+    amz_date = timestamp.strftime("%Y%m%dT%H%M%SZ")
+    date_stamp = timestamp.strftime("%Y%m%d")
+    service = "execute-api"
+    method = "GET"
+    payload_hash = hashlib.sha256(b"").hexdigest()
+    canonical_uri = urllib.parse.quote(parsed.path or "/", safe="/-_.~")
+    canonical_query = canonical_query_string(parsed.query)
+    headers = {
+        "host": parsed.netloc,
+        "x-amz-date": amz_date,
+    }
+    if session_token:
+        headers["x-amz-security-token"] = session_token
+    signed_headers = ";".join(sorted(headers))
+    canonical_headers = "".join(f"{name}:{headers[name]}\n" for name in sorted(headers))
+    canonical_request = "\n".join(
+        [
+            method,
+            canonical_uri,
+            canonical_query,
+            canonical_headers,
+            signed_headers,
+            payload_hash,
+        ]
+    )
+    credential_scope = f"{date_stamp}/{resolved_region}/{service}/aws4_request"
+    string_to_sign = "\n".join(
+        [
+            "AWS4-HMAC-SHA256",
+            amz_date,
+            credential_scope,
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        ]
+    )
+    signature = hmac.new(
+        aws_sigv4_signing_key(secret_key, date_stamp, resolved_region, service),
+        string_to_sign.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    authorization = (
+        f"AWS4-HMAC-SHA256 Credential={access_key}/{credential_scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    request_headers = {
+        "Authorization": authorization,
+        "X-Amz-Date": amz_date,
+    }
+    if session_token:
+        request_headers["X-Amz-Security-Token"] = session_token
+    return request_headers, None
+
+
+def fetch_health_url(url: str, timeout: int = 20, aws_sigv4: bool = False, aws_region: str | None = None) -> tuple[int | None, str]:
+    stripped_url = url.strip()
+    parsed = urllib.parse.urlparse(stripped_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None, "Health URL must be an absolute http or https URL."
+    headers = {"User-Agent": f"devsecops-cli/{VERSION}"}
+    if aws_sigv4:
+        signed_headers, error = aws_sigv4_headers(stripped_url, region=aws_region)
+        if error:
+            return None, error
+        headers.update(signed_headers)
+    request = urllib.request.Request(stripped_url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
             status = int(getattr(response, "status", response.getcode()))
             preview = response.read(200).decode("utf-8", errors="replace").strip()
             return status, preview or f"HTTP {status}"
@@ -2836,7 +3032,14 @@ def fetch_health_url(url: str, timeout: int = 20) -> tuple[int | None, str]:
         return None, f"Timed out after {timeout}s."
 
 
-def collect_health_checks(root: Path, cfg: dict[str, Any], url: str | None = None, timeout: int = 20) -> list[Check]:
+def collect_health_checks(
+    root: Path,
+    cfg: dict[str, Any],
+    url: str | None = None,
+    timeout: int = 20,
+    aws_sigv4: bool = False,
+    aws_region: str | None = None,
+) -> list[Check]:
     health_url, source = resolve_health_url(root, url)
     checks = [
         Check(
@@ -2847,7 +3050,7 @@ def collect_health_checks(root: Path, cfg: dict[str, Any], url: str | None = Non
     ]
     if not health_url:
         return checks
-    status, detail = fetch_health_url(health_url, timeout=timeout)
+    status, detail = fetch_health_url(health_url, timeout=timeout, aws_sigv4=aws_sigv4, aws_region=aws_region)
     ok_status = status is not None and 200 <= status < 400
     checks.append(
         Check(
@@ -4241,7 +4444,7 @@ def preset_dict(name: str) -> dict[str, Any]:
 def least_privilege_guidance() -> dict[str, Any]:
     return {
         "plan_role": {
-            "secret": PLAN_ROLE_SECRET,
+            SENSITIVITY_LABEL: PLAN_ROLE_ENV_NAME,
             "purpose": "Pull request and manual Terraform plans.",
             "allow": [
                 "Read Terraform state from the dedicated S3 backend bucket.",
@@ -4256,7 +4459,7 @@ def least_privilege_guidance() -> dict[str, Any]:
             ],
         },
         "deploy_role": {
-            "secret": "AWS_ROLE_TO_ASSUME_ARN",
+            SENSITIVITY_LABEL: DEPLOY_ROLE_ENV_NAME,
             "purpose": "Manual production deploy workflow from main after approval.",
             "allow": [
                 "Apply Terraform-managed KMS, S3, ECR, Lambda, API Gateway, CloudWatch Logs, SQS, and IAM resources.",
@@ -4947,6 +5150,347 @@ def cmd_start(args: argparse.Namespace) -> int:
     return cmd_next(argparse.Namespace(format="human"))
 
 
+def file_exists_check(root: Path, label: str, path: str) -> dict[str, str]:
+    full_path = root / path
+    return {
+        "name": label,
+        "status": "OK" if full_path.exists() else "BLOCKED",
+        "detail": path if full_path.exists() else f"Missing {path}.",
+    }
+
+
+def file_contains_check(root: Path, label: str, path: str, snippets: list[str]) -> dict[str, str]:
+    full_path = root / path
+    if not full_path.exists():
+        return {"name": label, "status": "BLOCKED", "detail": f"Missing {path}."}
+    text = full_path.read_text(encoding="utf-8")
+    missing = [snippet for snippet in snippets if snippet not in text]
+    return {
+        "name": label,
+        "status": "OK" if not missing else "BLOCKED",
+        "detail": path if not missing else f"{path} is missing: " + ", ".join(missing),
+    }
+
+
+def test_contains_check(root: Path, label: str, snippets: list[str]) -> dict[str, str]:
+    return file_contains_check(root, label, "cli/tests/test_devsecops_cli.py", snippets)
+
+
+def make_criterion(
+    criterion_id: str,
+    title: str,
+    evidence: list[str],
+    checks: list[dict[str, str]],
+    next_action: str,
+) -> dict[str, Any]:
+    blocked = [check for check in checks if check["status"] != "OK"]
+    return {
+        "id": criterion_id,
+        "title": title,
+        "status": "OK" if not blocked else "BLOCKED",
+        "evidence": evidence,
+        "checks": checks,
+        "next_action": "No action required." if not blocked else next_action,
+    }
+
+
+def evidence_file_checks(evidence_dir: Path, required_files: list[str]) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+    for relative in required_files:
+        path = evidence_dir / relative
+        if not path.exists():
+            checks.append({"name": relative, "status": "BLOCKED", "detail": f"Missing {path}."})
+            continue
+        if path.is_file() and path.stat().st_size == 0:
+            checks.append({"name": relative, "status": "BLOCKED", "detail": f"{path} is empty."})
+            continue
+        if path.suffix == ".json":
+            try:
+                json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                checks.append({"name": relative, "status": "BLOCKED", "detail": f"{path} is not valid JSON: {exc.msg}."})
+                continue
+        checks.append(
+            {
+                "name": relative,
+                "status": "OK",
+                "detail": str(path),
+            }
+        )
+    return checks
+
+
+def v1_criteria_payload(root: Path, evidence_dir: Path | None = None) -> dict[str, Any]:
+    if evidence_dir is None:
+        evidence_dir = root / PRODUCTION_EVIDENCE_DIR / f"v{VERSION}"
+    elif not evidence_dir.is_absolute():
+        evidence_dir = root / evidence_dir
+    evidence_dir_display = str(evidence_dir.relative_to(root)) if evidence_dir.is_relative_to(root) else str(evidence_dir)
+
+    criteria = [
+        make_criterion(
+            "cli-command-stability",
+            "CLI command groups and core flags are stable.",
+            [
+                "devsecops inventory --format json",
+                "docs/stability-contract.md",
+                "docs/command-inventory.md",
+                "test_command_inventory_json_exposes_stability_contract",
+            ],
+            [
+                file_exists_check(root, "Stability contract doc", "docs/stability-contract.md"),
+                file_exists_check(root, "Command inventory doc", "docs/command-inventory.md"),
+                test_contains_check(root, "Inventory regression tests", ["test_command_inventory_json_exposes_stability_contract"]),
+                {
+                    "name": "Stable command inventory",
+                    "status": "OK" if any(item["command"] == "devsecops criteria" and item["status"] == "stable" for item in COMMAND_CONTRACTS) else "BLOCKED",
+                    "detail": "`devsecops criteria` is listed as a stable release command.",
+                },
+            ],
+            "Run `devsecops inventory --format json` and update docs/stability-contract.md or command contracts.",
+        ),
+        make_criterion(
+            "config-schema-migration",
+            "Config schema versioning and migration behavior are implemented.",
+            [
+                "devsecops config schema --format json",
+                "docs/upgrade-guide.md",
+                "test_future_config_schema_version_fails_closed_before_rendering",
+            ],
+            [
+                {"name": "Current config schema version", "status": "OK", "detail": str(CONFIG_SCHEMA_VERSION)},
+                file_exists_check(root, "Upgrade guide", "docs/upgrade-guide.md"),
+                test_contains_check(
+                    root,
+                    "Config migration regression tests",
+                    [
+                        "test_load_legacy_config_without_schema_version_migrates_to_current_schema",
+                        "test_future_config_schema_version_fails_closed_before_rendering",
+                        "test_config_schema_documents_migration_and_rollback_contract",
+                    ],
+                ),
+            ],
+            "Update config migration tests, docs/upgrade-guide.md, and `devsecops config schema` output.",
+        ),
+        make_criterion(
+            "clean-config-e2e",
+            "Clean config generation, validation, rendering, and readiness are covered by end-to-end tests.",
+            [
+                "test_config_new_show_schema_diff_and_reset_workflow",
+                "test_e2e_config_validate_render_report_in_temp_repo",
+                ".github/workflows/ci.yml",
+            ],
+            [
+                file_exists_check(root, "CI workflow", ".github/workflows/ci.yml"),
+                test_contains_check(
+                    root,
+                    "Clean config and E2E tests",
+                    [
+                        "test_config_new_show_schema_diff_and_reset_workflow",
+                        "test_e2e_config_validate_render_report_in_temp_repo",
+                    ],
+                ),
+            ],
+            "Add or restore clean-config/E2E coverage before marking v1.0 stable.",
+        ),
+        make_criterion(
+            "generated-artifacts-deterministic",
+            "Generated Terraform and GitHub artifacts are deterministic and documented.",
+            [
+                "docs/generated-artifacts.md",
+                "cli/tests/golden/",
+                "test_rendered_artifacts_have_stable_diffs_across_repeated_runs",
+            ],
+            [
+                file_exists_check(root, "Generated artifacts doc", "docs/generated-artifacts.md"),
+                file_exists_check(root, "Golden artifact fixtures", "cli/tests/golden"),
+                test_contains_check(
+                    root,
+                    "Generated artifact regression tests",
+                    [
+                        "test_rendered_artifacts_have_stable_diffs_across_repeated_runs",
+                        "test_generated_github_artifacts_match_golden_fixtures",
+                    ],
+                ),
+            ],
+            "Update generated artifact docs and golden tests before releasing stable.",
+        ),
+        make_criterion(
+            "production-walkthrough-documented",
+            "At least one full AWS/GitHub production deployment walkthrough is documented.",
+            [
+                "docs/production-deployment-evidence.md",
+                "docs/first-successful-pipeline.md",
+                "README.md production deployment flow",
+            ],
+            [
+                file_contains_check(
+                    root,
+                    "Production evidence walkthrough",
+                    "docs/production-deployment-evidence.md",
+                    [
+                        "workflow-run.json",
+                        "terraform-output.json",
+                        "aws-outputs.json",
+                        "health.json",
+                        "cloudwatch-tail.txt",
+                        "active-lambda-image.txt",
+                    ],
+                ),
+                test_contains_check(root, "Production evidence docs test", ["test_production_evidence_docs_cover_milestone_eight_contract"]),
+            ],
+            "Update docs/production-deployment-evidence.md with the full AWS/GitHub walkthrough.",
+        ),
+        make_criterion(
+            "local-rollback-safe",
+            "Local rollback cannot overwrite files outside the CLI-owned file set.",
+            [
+                "SNAPSHOT_FILES allowlist",
+                "docs/generated-artifacts.md",
+                "test_snapshot_restore_does_not_overwrite_user_owned_file",
+            ],
+            [
+                {"name": "Snapshot allowlist", "status": "OK" if SNAPSHOT_FILE_PATHS else "BLOCKED", "detail": ", ".join(sorted(SNAPSHOT_FILE_PATHS))},
+                file_exists_check(root, "Generated artifacts doc", "docs/generated-artifacts.md"),
+                test_contains_check(
+                    root,
+                    "Rollback allowlist tests",
+                    [
+                        "test_snapshot_restore_does_not_overwrite_user_owned_file",
+                        "test_snapshot_restore_ignores_paths_outside_cli_allowlist",
+                    ],
+                ),
+            ],
+            "Restore rollback allowlist tests and generated-artifact rollback documentation.",
+        ),
+        make_criterion(
+            "security-controls-regression",
+            "Security controls have documented behavior and regression tests.",
+            [
+                "docs/security-controls.md",
+                "AWS_policy.md",
+                "test_workflow_security_hardening_contract",
+                "test_terraform_security_hardening_contract",
+            ],
+            [
+                file_exists_check(root, "Security controls doc", "docs/security-controls.md"),
+                file_exists_check(root, "AWS OIDC/IAM guidance", "AWS_policy.md"),
+                test_contains_check(
+                    root,
+                    "Security regression tests",
+                    [
+                        "test_workflow_security_hardening_contract",
+                        "test_terraform_security_hardening_contract",
+                    ],
+                ),
+            ],
+            "Update security docs and workflow/Terraform regression tests.",
+        ),
+        make_criterion(
+            "release-upgrade-documented",
+            "Release and upgrade flows are documented.",
+            [
+                "docs/distribution.md",
+                "docs/release-checklist.md",
+                "docs/upgrade-guide.md",
+                "docs/release-v0.12.0.md",
+            ],
+            [
+                file_exists_check(root, "Distribution guide", "docs/distribution.md"),
+                file_exists_check(root, "Release checklist", "docs/release-checklist.md"),
+                file_exists_check(root, "Upgrade guide", "docs/upgrade-guide.md"),
+                file_exists_check(root, "Latest release notes", "docs/release-v0.12.0.md"),
+            ],
+            "Update distribution, release, upgrade, and latest release-note docs.",
+        ),
+        make_criterion(
+            "known-limitations-explicit",
+            "Known limitations are explicit rather than hidden in implementation details.",
+            [
+                "docs/known-limitations.md",
+                "README.md Current Limitations",
+                "docs/v1.0.0-release-candidate-checklist.md blocker register",
+            ],
+            [
+                file_contains_check(root, "Known limitations register", "docs/known-limitations.md", ["Accepted Limitations", "Blockers Before v1.0.0 Stable"]),
+                file_contains_check(root, "README limitations section", "README.md", ["## Current Limitations"]),
+                file_contains_check(root, "RC blocker register", "docs/v1.0.0-release-candidate-checklist.md", ["Blocker Register For v1.0.0 Stable"]),
+            ],
+            "Keep accepted limitations and stable-release blockers explicit in docs.",
+        ),
+    ]
+
+    stable_release_gates = [
+        make_criterion(
+            "production-evidence-bundle-attached",
+            "Full AWS/GitHub production evidence bundle is attached.",
+            [str(evidence_dir), "docs/production-deployment-evidence.md"],
+            evidence_file_checks(evidence_dir, PRODUCTION_EVIDENCE_REQUIRED_FILES),
+            f"Run docs/production-deployment-evidence.md and store the required files under {evidence_dir_display}.",
+        ),
+        make_criterion(
+            "wsl2-compatibility-transcript-attached",
+            "WSL2 compatibility transcript is attached.",
+            [str(evidence_dir / WSL2_EVIDENCE_REQUIRED_FILES[0]), "docs/distribution.md"],
+            evidence_file_checks(evidence_dir, WSL2_EVIDENCE_REQUIRED_FILES),
+            f"Capture WSL2 install, dry-run, completion, and test transcript in {evidence_dir_display}/{WSL2_EVIDENCE_REQUIRED_FILES[0]}.",
+        ),
+    ]
+
+    next_actions = [
+        item["next_action"]
+        for item in [*criteria, *stable_release_gates]
+        if item["status"] != "OK"
+    ]
+    return {
+        "kind": "v1-criteria",
+        "schema_version": CONTRACT_SCHEMA_VERSION,
+        "cli_version": VERSION,
+        "generated_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "evidence_dir": evidence_dir_display,
+        "stable_ready": not next_actions,
+        "criteria": criteria,
+        "stable_release_gates": stable_release_gates,
+        "next_actions": next_actions or ["No action required."],
+    }
+
+
+def print_v1_criteria(payload: dict[str, Any]) -> None:
+    draw_table(
+        ["Criterion", "Status", "Next Action"],
+        [[item["title"], item["status"], item["next_action"]] for item in payload["criteria"]],
+        title="Version 1.0 Criteria",
+    )
+    print()
+    draw_table(
+        ["Stable Release Gate", "Status", "Next Action"],
+        [[item["title"], item["status"], item["next_action"]] for item in payload["stable_release_gates"]],
+        title="Stable Release Gates",
+    )
+    print()
+    draw_box(
+        "Stable Readiness",
+        [
+            f"Stable ready: {str(payload['stable_ready']).lower()}",
+            f"Evidence dir: {payload['evidence_dir']}",
+            f"Next: {payload['next_actions'][0]}",
+        ],
+    )
+
+
+def cmd_criteria(args: argparse.Namespace) -> int:
+    root = repo_root()
+    evidence_arg = getattr(args, "evidence_dir", None)
+    payload = v1_criteria_payload(root, Path(evidence_arg) if evidence_arg else None)
+    if getattr(args, "format", "human") == "json":
+        emit_json(payload)
+    else:
+        print_v1_criteria(payload)
+    if getattr(args, "strict", False) and not payload["stable_ready"]:
+        return EXIT_VALIDATION_FAILED
+    return EXIT_OK
+
+
 def terraform_validate_evidence(root: Path) -> dict[str, Any]:
     if not command_exists("terraform"):
         return {"available": False, "returncode": None, "detail": "`terraform` not found on PATH."}
@@ -4975,6 +5519,7 @@ def collect_rc_evidence(root: Path, output_dir: Path) -> dict[str, Any]:
         "config-schema.md": config_schema_markdown() + "\n",
         "readiness.json": json.dumps(checks_payload("readiness", checks, context={"deep": False}), indent=2, sort_keys=True) + "\n",
         "audit-report.json": audit_report_json(cfg, checks, deep=False),
+        "criteria.json": json.dumps(v1_criteria_payload(root), indent=2, sort_keys=True) + "\n",
         "terraform-validate.txt": terraform_validate["detail"] + "\n",
     }
     written: list[str] = []
@@ -5614,12 +6159,23 @@ def cmd_readiness(args: argparse.Namespace) -> int:
 def cmd_health(args: argparse.Namespace) -> int:
     root = repo_root()
     cfg = load_config(root)
-    checks = collect_health_checks(root, cfg, url=getattr(args, "url", None), timeout=getattr(args, "timeout", 20))
+    checks = collect_health_checks(
+        root,
+        cfg,
+        url=getattr(args, "url", None),
+        timeout=getattr(args, "timeout", 20),
+        aws_sigv4=getattr(args, "aws_sigv4", False),
+        aws_region=getattr(args, "aws_region", None),
+    )
     emit_check_output(
         "Health",
         checks,
         output_format=getattr(args, "format", "human"),
-        context={"source": "url" if getattr(args, "url", None) else "terraform output", "timeout_seconds": getattr(args, "timeout", 20)},
+        context={
+            "source": "url" if getattr(args, "url", None) else "terraform output",
+            "timeout_seconds": getattr(args, "timeout", 20),
+            "aws_sigv4": bool(getattr(args, "aws_sigv4", False)),
+        },
     )
     return EXIT_VALIDATION_FAILED if any(check.status == "FAIL" for check in checks) else EXIT_OK
 
@@ -5756,26 +6312,26 @@ def run_plan(root: Path, env_name: str, no_init: bool = False, create_workspace:
     if not no_init:
         init_command = ["terraform", "-chdir=terraform", "init", "-input=false", "-no-color"]
         print(info("$ " + " ".join(init_command)))
-        init_result = subprocess.run(init_command, cwd=root, check=False)
+        init_result = subprocess.run(init_command, cwd=root, check=False)  # nosec B603
         if init_result.returncode != 0:
             return init_result.returncode
 
     select_command = ["terraform", "-chdir=terraform", "workspace", "select", env_name]
     print(info("$ " + " ".join(select_command)))
-    select_result = subprocess.run(select_command, cwd=root, check=False)
+    select_result = subprocess.run(select_command, cwd=root, check=False)  # nosec B603
     if select_result.returncode != 0:
         if not create_workspace:
             print(warn(f"Workspace `{env_name}` does not exist. Re-run with --create-workspace if this is expected."))
             return select_result.returncode
         new_command = ["terraform", "-chdir=terraform", "workspace", "new", env_name]
         print(info("$ " + " ".join(new_command)))
-        new_result = subprocess.run(new_command, cwd=root, check=False)
+        new_result = subprocess.run(new_command, cwd=root, check=False)  # nosec B603
         if new_result.returncode != 0:
             return new_result.returncode
 
     plan_command = ["terraform", "-chdir=terraform", "plan", "-input=false", "-no-color"]
     print(info("$ " + " ".join(plan_command)))
-    plan_result = subprocess.run(plan_command, cwd=root, check=False)
+    plan_result = subprocess.run(plan_command, cwd=root, check=False)  # nosec B603
     if plan_result.returncode != 0:
         return plan_result.returncode
     return 0
@@ -5810,7 +6366,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     if args.apply:
         command.insert(4, "-auto-approve")
     print(info("$ terraform -chdir=terraform/bootstrap init -input=false -no-color"))
-    init = subprocess.run(
+    init = subprocess.run(  # nosec B603, B607
         ["terraform", "-chdir=terraform/bootstrap", "init", "-input=false", "-no-color"],
         cwd=root,
         check=False,
@@ -5818,7 +6374,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     if init.returncode != 0:
         return init.returncode
     print(info("$ " + " ".join(command)))
-    return subprocess.run(command, cwd=root, check=False).returncode
+    return subprocess.run(command, cwd=root, check=False).returncode  # nosec B603
 
 
 def explain_text(topic: str, cfg: dict[str, Any] | None = None) -> list[str]:
@@ -6463,7 +7019,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     subparsers = parser.add_subparsers(
         dest="command",
-        metavar="{menu,config,next,start,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,inventory,evidence,completion}",
+        metavar="{menu,config,next,start,criteria,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,inventory,evidence,completion}",
     )
     parser.set_defaults(func=cmd_menu)
 
@@ -6495,6 +7051,15 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--render", action="store_true", help="Render artifacts after config exists.")
     start_parser.add_argument("--yes", action="store_true", help="Create missing config without prompting.")
     start_parser.set_defaults(func=cmd_start)
+
+    criteria_parser = subparsers.add_parser("criteria", help="Check Version 1.0 criteria and stable-release evidence blockers.")
+    criteria_parser.add_argument("--format", choices=["human", "json"], default="human", help="Output mode.")
+    criteria_parser.add_argument(
+        "--evidence-dir",
+        help=f"Production evidence directory. Defaults to {PRODUCTION_EVIDENCE_DIR}/v{VERSION}.",
+    )
+    criteria_parser.add_argument("--strict", action="store_true", help="Exit non-zero until all criteria and stable-release gates are OK.")
+    criteria_parser.set_defaults(func=cmd_criteria)
 
     evidence_parser = subparsers.add_parser("evidence", help="Collect release or RC evidence artifacts.")
     evidence_parser.set_defaults(func=cmd_evidence)
@@ -6587,6 +7152,8 @@ def build_parser() -> argparse.ArgumentParser:
     health_parser = subparsers.add_parser("health", help="Validate the deployed /health endpoint outside GitHub Actions.")
     health_parser.add_argument("--url", help="Health URL to check. Defaults to Terraform output api_gateway_health_url.")
     health_parser.add_argument("--timeout", type=int, default=20, help="HTTP timeout in seconds.")
+    health_parser.add_argument("--aws-sigv4", action="store_true", help="Sign the health request with AWS SigV4 for IAM-protected API Gateway routes.")
+    health_parser.add_argument("--aws-region", help="AWS region to use for SigV4 signing. Defaults to AWS_REGION or AWS_DEFAULT_REGION.")
     health_parser.add_argument("--format", choices=["human", "compact", "json"], default="human", help="Output mode.")
     health_parser.set_defaults(func=cmd_health)
 

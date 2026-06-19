@@ -50,10 +50,11 @@ Use `devsecops menu` when you prefer the interactive path.
 | `devsecops readiness` | Stable | Diagnostics | Shows scored readiness gaps and concrete next actions. Supports `--strict` and `--format human\|compact\|json`. |
 | `devsecops dry-run` | Stable | First success | Previews the first-success path without writing files or requiring AWS credentials. |
 | `devsecops preflight` | Stable | First success | Checks Lambda image URI shape, immutability, and region before production deploy. |
-| `devsecops health` | Stable | Operations | Validates the deployed `/health` endpoint outside GitHub Actions. Uses Terraform output unless `--url` is provided. |
+| `devsecops health` | Stable | Operations | Validates the deployed `/health` endpoint outside GitHub Actions. Uses Terraform output unless `--url` is provided; use `--aws-sigv4` for IAM-protected API Gateway routes. |
 | `devsecops render` | Stable | Generation | Writes CLI-owned Terraform and GitHub helper artifacts. Use `--dry-run` to preview file changes. |
 | `devsecops report` | Stable | Reporting | Writes a CLI-owned Markdown readiness report or JSON audit evidence with `--format json`. |
 | `devsecops evidence collect` | Stable | Reporting | Collects local release-candidate evidence artifacts with `--rc`. |
+| `devsecops criteria` | Stable | Release | Checks every Version 1.0 criterion and the external evidence gates that still block a stable tag. Supports `--strict`, `--evidence-dir`, and `--format human\|json`. |
 | `devsecops dashboard` | Stable | Diagnostics | Prints a one-screen readiness dashboard. |
 | `devsecops inventory` | Stable | Stability | Prints the command, flag, JSON output, generated artifact, deprecation, and migration contract. Supports `--format human\|markdown\|json` and `--status all\|stable\|alias\|experimental\|support`. |
 | `devsecops completion <shell>` | Stable | Distribution | Prints dependency-free shell completion for `bash`, `zsh`, or `fish`. |
@@ -132,6 +133,7 @@ Use `devsecops menu` when you prefer the interactive path.
 | Render dry run | `devsecops render --dry-run` |
 | Audit evidence | `devsecops report --format json` |
 | RC evidence collection | `devsecops evidence collect --rc` |
+| Version 1.0 criteria check | `devsecops criteria --strict` |
 | Production evidence guide | `docs/production-deployment-evidence.md` |
 | Release candidate checklist | `docs/v1.0.0-release-candidate-checklist.md` |
 | Stability contract JSON | `devsecops inventory --format json` |
@@ -145,7 +147,7 @@ Use `devsecops menu` when you prefer the interactive path.
 | AWS outputs | `devsecops aws outputs --environment prod --format json` |
 | Branch doctor | `devsecops doctor branch --branch main` |
 | Actions status | `devsecops doctor actions --format compact` |
-| Health validation | `devsecops health --url <health-url>` |
+| Health validation | `devsecops health --url <health-url> --aws-sigv4` |
 | All diagnostics | `devsecops doctor all --format json` |
 | GitHub setup | `devsecops github setup --write` |
 | GitHub status | `devsecops github status --format json` |
@@ -220,7 +222,7 @@ devsecops doctor branch --branch main --format json
 devsecops github status --format json
 devsecops aws outputs --environment prod --format json
 devsecops doctor aws --environment prod --strict --format json
-devsecops health --url <health-url> --format json
+devsecops health --url <health-url> --aws-sigv4 --format json
 ```
 
 Use [Production deployment evidence](production-deployment-evidence.md) for the

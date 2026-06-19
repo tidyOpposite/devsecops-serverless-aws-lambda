@@ -20,7 +20,7 @@ devsecops doctor
 devsecops doctor --deep
 devsecops github status --format compact
 devsecops aws outputs --environment prod
-devsecops health
+devsecops health --aws-sigv4
 ```
 
 Use `[i] details` from the main menu or `devsecops readiness` to see only the
@@ -28,6 +28,10 @@ checks that block 100% readiness and the concrete fix for each one. Use
 `devsecops doctor` when you need the full local check list. The dashboard
 groups readiness into Local, Terraform, GitHub, AWS, Security, and Deployment
 scores.
+
+Use `devsecops criteria --strict` when preparing a stable release. It checks
+every Version 1.0 criterion plus the external production and WSL2 evidence
+gates, then prints the next missing artifact or command.
 
 `devsecops tui` uses optional Rich/Textual dependencies. Without them, it falls
 back to the compact dashboard. For a published install, add the dependencies
@@ -577,8 +581,8 @@ Health validation is optional and runs only when
 Run the same check outside GitHub Actions:
 
 ```bash
-devsecops health --url <health-url>
-devsecops health
+devsecops health --url <health-url> --aws-sigv4
+devsecops health --aws-sigv4
 ```
 
 Then follow [failed validation](runbooks/failed-validation.md) if the endpoint

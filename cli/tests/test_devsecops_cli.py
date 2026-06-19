@@ -66,7 +66,7 @@ def project_requires_python(path: Path) -> str:
 
 class DevSecOpsCliTests(unittest.TestCase):
     def test_version_metadata_is_consistent(self) -> None:
-        self.assertEqual(cli.VERSION, "0.11.0")
+        self.assertEqual(cli.VERSION, "0.12.0")
         self.assertEqual(package.VERSION, cli.VERSION)
         self.assertEqual(package.__version__, cli.VERSION)
         self.assertEqual(project_version(ROOT_DIR / "pyproject.toml"), cli.VERSION)
@@ -476,6 +476,7 @@ class DevSecOpsCliTests(unittest.TestCase):
             "Blocker Register For v1.0.0 Stable",
             "RC-B1",
             "devsecops inventory --format json",
+            "devsecops criteria --strict --format json",
             "devsecops report --format json",
             "terraform -chdir=terraform validate -no-color",
         ]:
@@ -509,7 +510,7 @@ class DevSecOpsCliTests(unittest.TestCase):
     def test_top_level_help_is_grouped_and_legacy_aliases_are_not_primary_choices(self) -> None:
         help_text = cli.build_parser().format_help()
         self.assertIn(
-            "{menu,config,next,start,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,inventory,evidence,completion}",
+            "{menu,config,next,start,criteria,dry-run,preflight,health,doctor,aws,render,github,terraform,snapshot,readiness,report,dashboard,explain,inventory,evidence,completion}",
             help_text,
         )
         self.assertIn("Legacy aliases still work", help_text)
@@ -524,7 +525,7 @@ class DevSecOpsCliTests(unittest.TestCase):
         fish = cli.completion_script("fish")
 
         self.assertIn("complete -F _devsecops_completion devsecops", bash)
-        self.assertIn("config next start dry-run preflight", bash)
+        self.assertIn("config next start criteria dry-run preflight", bash)
         self.assertIn("show new validate diff reset set create schema", bash)
         self.assertIn("#compdef devsecops", zsh)
         self.assertIn("compadd 'menu' 'config'", zsh)
@@ -555,6 +556,7 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertEqual(by_command["devsecops terraform bootstrap"]["status"], "stable")
         self.assertEqual(by_command["devsecops next"]["status"], "stable")
         self.assertEqual(by_command["devsecops start"]["status"], "stable")
+        self.assertEqual(by_command["devsecops criteria"]["status"], "stable")
         self.assertEqual(by_command["devsecops evidence collect"]["status"], "stable")
         self.assertEqual(by_command["devsecops rollback"]["alias_for"], "devsecops snapshot restore")
         self.assertEqual(by_command["devsecops compose"]["status"], "experimental")
@@ -583,6 +585,7 @@ class DevSecOpsCliTests(unittest.TestCase):
         for command in [
             ["next", "--help"],
             ["start", "--help"],
+            ["criteria", "--help"],
             ["evidence", "collect", "--help"],
         ]:
             buffer = io.StringIO()
@@ -708,12 +711,54 @@ class DevSecOpsCliTests(unittest.TestCase):
             manifest = json.loads((evidence_dir / "manifest.json").read_text(encoding="utf-8"))
             inventory_exists = (evidence_dir / "inventory.json").exists()
             readiness_exists = (evidence_dir / "readiness.json").exists()
+            criteria = json.loads((evidence_dir / "criteria.json").read_text(encoding="utf-8"))
 
         self.assertEqual(result, cli.EXIT_OK)
         self.assertEqual(manifest["kind"], "release-candidate-evidence")
         self.assertTrue(inventory_exists)
         self.assertTrue(readiness_exists)
+        self.assertEqual(criteria["kind"], "v1-criteria")
         self.assertIn("Release Candidate Evidence", buffer.getvalue())
+
+    def test_criteria_command_json_reports_missing_stable_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            evidence_dir = Path(tmpdir) / "evidence"
+            with patch.object(cli, "repo_root", return_value=ROOT_DIR):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["criteria", "--format", "json", "--evidence-dir", str(evidence_dir)])
+
+        payload = json.loads(buffer.getvalue())
+        gate_statuses = {gate["id"]: gate["status"] for gate in payload["stable_release_gates"]}
+
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertEqual(payload["kind"], "v1-criteria")
+        self.assertFalse(payload["stable_ready"])
+        self.assertTrue(all(item["status"] == "OK" for item in payload["criteria"]))
+        self.assertEqual(gate_statuses["production-evidence-bundle-attached"], "BLOCKED")
+        self.assertEqual(gate_statuses["wsl2-compatibility-transcript-attached"], "BLOCKED")
+        self.assertTrue(any("production-deployment-evidence" in action for action in payload["next_actions"]))
+
+    def test_criteria_strict_passes_when_required_external_evidence_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            evidence_dir = Path(tmpdir) / "evidence"
+            (evidence_dir / "workflow-artifacts").mkdir(parents=True)
+            for relative in [*cli.PRODUCTION_EVIDENCE_REQUIRED_FILES, *cli.WSL2_EVIDENCE_REQUIRED_FILES]:
+                path = evidence_dir / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}\n" if path.suffix == ".json" else "test evidence\n", encoding="utf-8")
+
+            with patch.object(cli, "repo_root", return_value=ROOT_DIR):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    result = cli.main(["criteria", "--strict", "--format", "json", "--evidence-dir", str(evidence_dir)])
+
+        payload = json.loads(buffer.getvalue())
+
+        self.assertEqual(result, cli.EXIT_OK)
+        self.assertTrue(payload["stable_ready"])
+        self.assertTrue(all(item["status"] == "OK" for item in payload["criteria"]))
+        self.assertTrue(all(item["status"] == "OK" for item in payload["stable_release_gates"]))
 
     def test_first_success_documented_commands_are_stable(self) -> None:
         first_success_doc = (ROOT_DIR / "docs/first-successful-pipeline.md").read_text(encoding="utf-8")
@@ -1317,9 +1362,17 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertIn("zaproxy/action-baseline", deploy_workflow)
         self.assertIn("id-token: write", deploy_workflow)
         self.assertIn("pull-requests: write", deploy_workflow)
-        self.assertIn("sha256sum *.whl *.tar.gz > SHA256SUMS", release_workflow)
+        self.assertIn("API_AUTHORIZATION_TYPE: ${{ vars.API_AUTHORIZATION_TYPE || 'AWS_IAM' }}", deploy_workflow)
+        self.assertIn("--aws-sigv4", deploy_workflow)
+        self.assertIn("env.API_AUTHORIZATION_TYPE == 'NONE'", deploy_workflow)
+        self.assertIn("cp install.sh dist/install.sh", release_workflow)
+        self.assertIn("sha256sum install.sh *.whl *.tar.gz > SHA256SUMS", release_workflow)
         self.assertIn("sha256sum -c SHA256SUMS", release_workflow)
+        self.assertIn("dist/install.sh", release_workflow)
         self.assertIn("dist/SHA256SUMS", release_workflow)
+        self.assertNotIn("@v4", deploy_workflow)
+        self.assertNotIn("@v5", ci_workflow)
+        self.assertIn("build==1.5.0", release_workflow)
 
         for workflow in [deploy_workflow, ci_workflow, release_workflow]:
             self.assertIn("persist-credentials: false", workflow)
@@ -1328,19 +1381,32 @@ class DevSecOpsCliTests(unittest.TestCase):
         variables_tf = (ROOT_DIR / "terraform/variables.tf").read_text(encoding="utf-8")
         module_variables_tf = (ROOT_DIR / "terraform/modules/lambda/variables.tf").read_text(encoding="utf-8")
         api_gateway_variables_tf = (ROOT_DIR / "terraform/modules/api-gateway/variables.tf").read_text(encoding="utf-8")
+        api_gateway_tf = (ROOT_DIR / "terraform/modules/api-gateway/main.tf").read_text(encoding="utf-8")
         lambda_tf = (ROOT_DIR / "terraform/modules/lambda/main.tf").read_text(encoding="utf-8")
         storage_tf = (ROOT_DIR / "terraform/modules/storage/main.tf").read_text(encoding="utf-8")
+        kms_tf = (ROOT_DIR / "terraform/modules/kms/main.tf").read_text(encoding="utf-8")
+        bootstrap_tf = (ROOT_DIR / "terraform/bootstrap/main.tf").read_text(encoding="utf-8")
 
         self.assertIn("lambda_image_uri must be empty for validation-only runs or an immutable ECR image URI", variables_tf)
+        self.assertIn("api_authorization_type must be AWS_IAM or NONE", variables_tf)
         self.assertIn("environment_config.prod.cors_allowed_origins must not contain wildcard", variables_tf)
         self.assertIn("environment_config values must stay within Lambda/API limits", variables_tf)
         self.assertIn("cors_allowed_origins must contain at least one non-empty origin", api_gateway_variables_tf)
+        self.assertIn("authorization_type must be AWS_IAM or NONE", api_gateway_variables_tf)
+        self.assertIn("authorization_type = var.authorization_type", api_gateway_tf)
         self.assertIn("lambda_image_uri must be empty for validation-only runs or an immutable ECR image URI", module_variables_tf)
         self.assertIn("precondition", lambda_tf)
         self.assertIn("latest|bootstrap", lambda_tf)
         self.assertNotIn(":bootstrap", lambda_tf)
+        self.assertIn("kms_key_arn", lambda_tf)
+        self.assertIn("reserved_concurrent_executions", lambda_tf)
         self.assertIn("DenyInsecureTransport", storage_tf)
         self.assertIn("aws:SecureTransport", storage_tf)
+        self.assertIn("kms:ViaService", kms_tf)
+        self.assertIn("kms:EncryptionContext:aws:s3:arn", kms_tf)
+        self.assertIn("aws_kms_key\" \"terraform_state", bootstrap_tf)
+        self.assertIn("aws_s3_bucket_logging\" \"terraform_state", bootstrap_tf)
+        self.assertIn("aws_s3_bucket_lifecycle_configuration", bootstrap_tf)
 
     def test_branch_protection_checks_required_statuses(self) -> None:
         protection = {
@@ -1486,6 +1552,17 @@ class DevSecOpsCliTests(unittest.TestCase):
         self.assertEqual(payload["kind"], "health")
         self.assertEqual(payload["checks"][1]["name"], "Health response")
         self.assertEqual(payload["checks"][1]["status"], "OK")
+
+    def test_health_fetch_rejects_non_http_schemes(self) -> None:
+        status, detail = cli.fetch_health_url("file:///etc/passwd")
+        self.assertIsNone(status)
+        self.assertIn("http or https", detail)
+
+    def test_health_fetch_requires_sigv4_credentials_when_enabled(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            status, detail = cli.fetch_health_url("https://api.example/health", aws_sigv4=True)
+        self.assertIsNone(status)
+        self.assertIn("AWS SigV4 health checks require", detail)
 
     def test_parse_ecr_image_uri_tag_and_digest(self) -> None:
         tagged = cli.parse_ecr_image_uri("123456789012.dkr.ecr.us-east-1.amazonaws.com/app/service:sha-abc123")

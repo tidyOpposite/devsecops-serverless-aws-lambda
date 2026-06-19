@@ -36,7 +36,7 @@ resource "aws_apigatewayv2_route" "default_route" {
   api_id             = aws_apigatewayv2_api.http_api.id
   route_key          = "$default"
   target             = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
-  authorization_type = "NONE"
+  authorization_type = var.authorization_type
 }
 
 resource "aws_apigatewayv2_stage" "default_stage" {

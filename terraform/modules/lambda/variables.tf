@@ -36,6 +36,11 @@ variable "lambda_timeout" {
   type        = number
 }
 
+variable "reserved_concurrent_executions" {
+  description = "Function-level reserved concurrency limit."
+  type        = number
+}
+
 variable "log_retention_days" {
   description = "CloudWatch Logs retention in days."
   type        = number
